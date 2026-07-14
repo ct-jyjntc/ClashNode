@@ -57,7 +57,12 @@ import {
   webdavUploadBackup,
 } from "./store/webdav";
 import { disableSystemProxy, enableSystemProxy } from "./system/proxy";
-import { destroyTray, setTrayTraffic, setupTray } from "./system/tray";
+import {
+  destroyTray,
+  scheduleTrayRebuild,
+  setTrayTraffic,
+  setupTray,
+} from "./system/tray";
 import { registerHotkeys, unregisterHotkeys } from "./system/hotkeys";
 import {
   startOnDemandMonitor,
@@ -436,6 +441,17 @@ function registerIpc() {
 
     if (patch.startOnLaunch != null) {
       applyLoginItem(next.startOnLaunch);
+    }
+
+    if (
+      patch.showTrayTitle != null ||
+      patch.systemProxy != null ||
+      patch.tun != null ||
+      patch.mode != null ||
+      patch.startOnLaunch != null ||
+      patch.mixedPort != null
+    ) {
+      scheduleTrayRebuild();
     }
 
     if (patch.hotkeys != null) {

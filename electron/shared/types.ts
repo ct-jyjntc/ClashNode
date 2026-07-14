@@ -82,6 +82,8 @@ export interface AppSettings {
   /** Start mihomo core when the app becomes ready */
   autoStartCore: boolean;
   minimizeToTray: boolean;
+  /** macOS menu bar: show live up/down speed next to the tray icon (FlClash) */
+  showTrayTitle: boolean;
   /** Domains/IPs skipped by macOS system proxy */
   bypassDomains: string[];
   dns: DnsSettings;
@@ -338,6 +340,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   startOnLaunch: false,
   autoStartCore: false,
   minimizeToTray: true,
+  showTrayTitle: true,
   bypassDomains: [...DEFAULT_BYPASS],
   dns: {
     ...DEFAULT_DNS,

@@ -2,57 +2,365 @@ import {
   BrowserWindow,
   Menu,
   Tray,
+  app,
   clipboard,
   nativeImage,
+  type NativeImage,
 } from "electron";
 import type { CoreSupervisor } from "../core/supervisor";
-import type { AppSettings } from "../shared/types";
 import { loadSettings, updateSettings } from "../store/settings";
 import { disableSystemProxy, enableSystemProxy } from "./proxy";
+
+/**
+ * macOS menu bar tray (FlClash menu order + live speed).
+ *
+ * Electron `tray.setTitle` only paints one line (multi-line falls outside the
+ * bar). FlClash/Surge draw multi-line speed natively — we match that by
+ * compositing a circle + two speed lines into a single template image.
+ */
 
 let tray: Tray | null = null;
 let lastUp = 0;
 let lastDown = 0;
+let rebuildTimer: NodeJS.Timeout | null = null;
+let rebuildFn: (() => Promise<void>) | null = null;
+let paintTimer: NodeJS.Timeout | null = null;
+let lastPaintKey = "";
+let lastIconOnlyKey = "";
 
-function createTrayIcon() {
-  const size = 16;
-  const buf = Buffer.alloc(size * size * 4, 0);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const dx = x - 7.5;
-      const dy = y - 7.5;
-      const inside = dx * dx + dy * dy <= 36;
-      const i = (y * size + x) * 4;
-      if (inside) {
-        buf[i] = 0;
-        buf[i + 1] = 0;
-        buf[i + 2] = 0;
-        buf[i + 3] = 255;
+// ---------------------------------------------------------------------------
+// Speed formatting (FlClash shortTraffic)
+// ---------------------------------------------------------------------------
+
+function shortTraffic(n: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"] as const;
+  let size = Math.max(0, Number(n) || 0);
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+  // FlClash: "12 KB" + "/s"  →  "12 KB/s"
+  return `${Math.round(size)} ${units[unitIndex]}`;
+}
+
+function speedLines(up: number, down: number) {
+  return {
+    up: `${shortTraffic(up)}/s`,
+    down: `${shortTraffic(down)}/s`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 5×7 bitmap font (template-black glyphs)
+// ---------------------------------------------------------------------------
+
+/** Each glyph is 5 columns × 7 rows of 0/1. */
+const FONT: Record<string, number[][]> = (() => {
+  const g = (rows: string[]): number[][] =>
+    rows.map((r) => r.split("").map((c) => (c === "#" ? 1 : 0)));
+
+  return {
+    "0": g([" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "]),
+    "1": g(["  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", "#####"]),
+    "2": g([" ### ", "#   #", "    #", "  ## ", " #   ", "#    ", "#####"]),
+    "3": g([" ### ", "#   #", "    #", "  ## ", "    #", "#   #", " ### "]),
+    "4": g(["   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # "]),
+    "5": g(["#####", "#    ", "#### ", "    #", "    #", "#   #", " ### "]),
+    "6": g(["  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### "]),
+    "7": g(["#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "]),
+    "8": g([" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "]),
+    "9": g([" ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  "]),
+    B: g(["#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "]),
+    K: g(["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"]),
+    M: g(["#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #"]),
+    G: g([" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ####"]),
+    T: g(["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "]),
+    s: g(["     ", "     ", " ### ", "#    ", " ### ", "    #", " ####"]),
+    "/": g(["    #", "   # ", "  #  ", "  #  ", " #   ", "#    ", "#    "]),
+    " ": g(["     ", "     ", "     ", "     ", "     ", "     ", "     "]),
+    ".": g(["     ", "     ", "     ", "     ", "     ", "  #  ", "  #  "]),
+  };
+})();
+
+const GLYPH_W = 5;
+const GLYPH_H = 7;
+const GLYPH_GAP = 1;
+
+function measureText(text: string, scale: number) {
+  const n = text.length;
+  if (!n) return 0;
+  return n * (GLYPH_W * scale) + (n - 1) * (GLYPH_GAP * scale);
+}
+
+function drawChar(
+  buf: Buffer,
+  imgW: number,
+  x0: number,
+  y0: number,
+  ch: string,
+  scale: number,
+  alpha = 255,
+) {
+  const glyph = FONT[ch] ?? FONT[" "];
+  for (let gy = 0; gy < GLYPH_H; gy++) {
+    for (let gx = 0; gx < GLYPH_W; gx++) {
+      if (!glyph[gy][gx]) continue;
+      for (let sy = 0; sy < scale; sy++) {
+        for (let sx = 0; sx < scale; sx++) {
+          const x = x0 + gx * scale + sx;
+          const y = y0 + gy * scale + sy;
+          if (x < 0 || y < 0 || x >= imgW) continue;
+          const i = (y * imgW + x) * 4;
+          buf[i] = 0;
+          buf[i + 1] = 0;
+          buf[i + 2] = 0;
+          buf[i + 3] = alpha;
+        }
       }
     }
   }
-  const img = nativeImage.createFromBuffer(buf, { width: size, height: size });
-  img.setTemplateImage(true);
+}
+
+function drawText(
+  buf: Buffer,
+  imgW: number,
+  x0: number,
+  y0: number,
+  text: string,
+  scale: number,
+  alpha = 255,
+) {
+  let x = x0;
+  const step = GLYPH_W * scale + GLYPH_GAP * scale;
+  for (const ch of text) {
+    drawChar(buf, imgW, x, y0, ch, scale, alpha);
+    x += step;
+  }
+}
+
+function fillCircle(
+  buf: Buffer,
+  imgW: number,
+  imgH: number,
+  cx: number,
+  cy: number,
+  r: number,
+  alpha = 255,
+  hollow = false,
+  innerR = 0,
+) {
+  const r2 = r * r;
+  const ir2 = innerR * innerR;
+  const minX = Math.max(0, Math.floor(cx - r - 1));
+  const maxX = Math.min(imgW - 1, Math.ceil(cx + r + 1));
+  const minY = Math.max(0, Math.floor(cy - r - 1));
+  const maxY = Math.min(imgH - 1, Math.ceil(cy + r + 1));
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > r2) continue;
+      if (hollow && d2 < ir2) continue;
+      const i = (y * imgW + x) * 4;
+      buf[i] = 0;
+      buf[i + 1] = 0;
+      buf[i + 2] = 0;
+      buf[i + 3] = Math.max(buf[i + 3], alpha);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Composite tray image: circle + optional two-line speed (FlClash layout)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixed layout so the menu bar item never resizes as speeds change.
+ * shortTraffic max width is "1023 GB/s" (9 glyphs with our font).
+ */
+const TRAY_SCALE = 2; // @2x
+const TRAY_H = 22 * TRAY_SCALE;
+const TRAY_PAD_X = 2 * TRAY_SCALE;
+const TRAY_CIRCLE_R = 5 * TRAY_SCALE;
+const TRAY_GAP = 4 * TRAY_SCALE;
+const TRAY_FONT_SCALE = 2; // 5×7 → 10×14 px
+/** Widest speed label we ever paint (keeps canvas width constant). */
+const TRAY_SPEED_MAX_CHARS = "1023 GB/s".length;
+const TRAY_TEXT_SLOT_W = measureText(
+  "0".repeat(TRAY_SPEED_MAX_CHARS),
+  TRAY_FONT_SCALE,
+);
+const TRAY_RIGHT_PAD = 3 * TRAY_SCALE;
+/** Full width with speed statistics on. */
+const TRAY_W_SPEED = Math.ceil(
+  TRAY_PAD_X + TRAY_CIRCLE_R * 2 + TRAY_GAP + TRAY_TEXT_SLOT_W + TRAY_RIGHT_PAD,
+);
+/** Icon-only width (speed stats off). */
+const TRAY_W_ICON = Math.ceil(TRAY_PAD_X * 2 + TRAY_CIRCLE_R * 2);
+
+/**
+ * Build a @2x template image for the menu bar (~22pt tall).
+ * Fixed width when speed is shown so the menu bar doesn't jitter.
+ */
+function buildTrayImage(opts: {
+  running: boolean;
+  tun: boolean;
+  showSpeed: boolean;
+  up: number;
+  down: number;
+}): NativeImage {
+  const imgW = opts.showSpeed ? TRAY_W_SPEED : TRAY_W_ICON;
+  const imgH = TRAY_H;
+  const circleCx = TRAY_PAD_X + TRAY_CIRCLE_R;
+  const circleCy = imgH / 2;
+  const circleR = opts.running ? TRAY_CIRCLE_R + TRAY_SCALE * 0.5 : TRAY_CIRCLE_R;
+
+  const buf = Buffer.alloc(imgW * imgH * 4, 0);
+
+  if (!opts.running) {
+    fillCircle(
+      buf,
+      imgW,
+      imgH,
+      circleCx,
+      circleCy,
+      circleR,
+      255,
+      true,
+      circleR - 2.2 * TRAY_SCALE,
+    );
+  } else if (opts.tun) {
+    fillCircle(
+      buf,
+      imgW,
+      imgH,
+      circleCx,
+      circleCy,
+      circleR - 1.5 * TRAY_SCALE,
+      255,
+    );
+    fillCircle(
+      buf,
+      imgW,
+      imgH,
+      circleCx,
+      circleCy,
+      circleR + 0.5 * TRAY_SCALE,
+      255,
+      true,
+      circleR - 0.2 * TRAY_SCALE,
+    );
+  } else {
+    fillCircle(buf, imgW, imgH, circleCx, circleCy, circleR, 255);
+  }
+
+  if (opts.showSpeed) {
+    const { up: lineUp, down: lineDown } = speedLines(opts.up, opts.down);
+    const lineH = GLYPH_H * TRAY_FONT_SCALE;
+    const blockH = lineH * 2 + 2 * TRAY_SCALE;
+    const textTop = Math.round((imgH - blockH) / 2);
+    // Fixed text slot starting after the circle; right-align each line inside it
+    const slotLeft = Math.round(circleCx + TRAY_CIRCLE_R + TRAY_GAP);
+    const slotRight = slotLeft + TRAY_TEXT_SLOT_W;
+
+    const xUp = slotRight - measureText(lineUp, TRAY_FONT_SCALE);
+    const xDown = slotRight - measureText(lineDown, TRAY_FONT_SCALE);
+    drawText(buf, imgW, xUp, textTop, lineUp, TRAY_FONT_SCALE, 255);
+    drawText(
+      buf,
+      imgW,
+      xDown,
+      textTop + lineH + 2 * TRAY_SCALE,
+      lineDown,
+      TRAY_FONT_SCALE,
+      255,
+    );
+  }
+
+  const img = nativeImage.createFromBuffer(buf, {
+    width: imgW,
+    height: imgH,
+    scaleFactor: TRAY_SCALE,
+  });
+  if (process.platform === "darwin") {
+    img.setTemplateImage(true);
+  }
   return img;
 }
 
-function fmtSpeed(n: number) {
-  if (n < 1024) return `${Math.round(n)} B/s`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB/s`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB/s`;
+function applyTrayVisual(running: boolean, tun: boolean) {
+  if (!tray) return;
+  const settings = loadSettings();
+  const showSpeed =
+    process.platform === "darwin" && !!settings.showTrayTitle;
+
+  const lines = showSpeed ? speedLines(lastUp, lastDown) : { up: "", down: "" };
+  const key = [
+    running ? 1 : 0,
+    tun ? 1 : 0,
+    showSpeed ? 1 : 0,
+    lines.up,
+    lines.down,
+  ].join("|");
+
+  if (key === lastPaintKey) return;
+  lastPaintKey = key;
+  lastIconOnlyKey = `${running ? 1 : 0}:${tun ? 1 : 0}`;
+
+  try {
+    tray.setImage(
+      buildTrayImage({
+        running,
+        tun,
+        showSpeed,
+        up: lastUp,
+        down: lastDown,
+      }),
+    );
+    // Always clear title — speed is painted into the image (FlClash-like layout)
+    if (process.platform === "darwin") {
+      tray.setTitle("");
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function setTrayTraffic(up: number, down: number) {
   lastUp = up;
   lastDown = down;
-  if (!tray) return;
-  const stateTip = tray.getTitle?.() ?? "";
-  void stateTip;
-  try {
-    tray.setTitle(`↑${fmtSpeed(up)} ↓${fmtSpeed(down)}`);
-  } catch {
-    /* title may be unsupported */
-  }
+  if (!tray || process.platform !== "darwin") return;
+  const settings = loadSettings();
+  if (!settings.showTrayTitle) return;
+  // Coalesce high-frequency WS ticks
+  if (paintTimer) return;
+  paintTimer = setTimeout(() => {
+    paintTimer = null;
+    // Re-read running/tun from last known icon key
+    const [r, t] = lastIconOnlyKey.split(":");
+    applyTrayVisual(r === "1", t === "1");
+  }, 200);
+}
+
+/** Rebuild menu soon (coalesce bursts from traffic/state). */
+export function scheduleTrayRebuild() {
+  if (!rebuildFn) return;
+  if (rebuildTimer) clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(() => {
+    rebuildTimer = null;
+    void rebuildFn?.();
+  }, 80);
+}
+
+function copyEnvVar(port: number) {
+  const url = `http://127.0.0.1:${port}`;
+  const text =
+    process.platform === "win32"
+      ? `set all_proxy=${url}`
+      : `export all_proxy=${url}`;
+  clipboard.writeText(text);
 }
 
 export function setupTray(
@@ -61,32 +369,56 @@ export function setupTray(
   onQuit: () => void,
 ) {
   if (tray) return tray;
-  tray = new Tray(createTrayIcon());
+
+  const settings0 = loadSettings();
+  const state0 = supervisor.getState();
+  lastPaintKey = "";
+  lastIconOnlyKey = "";
+  tray = new Tray(
+    buildTrayImage({
+      running: state0.status === "running",
+      tun: settings0.tun,
+      showSpeed: process.platform === "darwin" && settings0.showTrayTitle !== false,
+      up: 0,
+      down: 0,
+    }),
+  );
+  lastIconOnlyKey = `${state0.status === "running" ? 1 : 0}:${settings0.tun ? 1 : 0}`;
   tray.setToolTip("ClashNode");
+  if (process.platform === "darwin") {
+    tray.setTitle("");
+  }
 
   const rebuild = async () => {
+    if (!tray) return;
     const state = supervisor.getState();
     const settings = loadSettings();
     const running = state.status === "running";
 
-    let groupSubmenu: Electron.MenuItemConstructorOptions[] = [];
-    if (running) {
+    applyTrayVisual(running, settings.tun);
+
+    // macOS: each group as top-level submenu (FlClash); limit size for UI
+    const groupItems: Electron.MenuItemConstructorOptions[] = [];
+    if (running && process.platform === "darwin") {
       try {
         const proxies = await supervisor.getApi().proxies();
         const groups = Object.values(proxies.proxies || {}).filter(
           (p) =>
-            p.type === "Selector" ||
-            p.type === "URLTest" ||
-            p.type === "Fallback",
+            (p.type === "Selector" ||
+              p.type === "URLTest" ||
+              p.type === "Fallback" ||
+              p.type === "LoadBalance") &&
+            !p.hidden &&
+            Array.isArray(p.all) &&
+            p.all.length > 0,
         );
-        // Prefer primary selector groups (limit menu size)
-        for (const g of groups.slice(0, 6)) {
-          const members = (g.all || []).slice(0, 20);
-          groupSubmenu.push({
+        for (const g of groups.slice(0, 12)) {
+          const members = (g.all || []).slice(0, 40);
+          groupItems.push({
             label: g.name,
             submenu: members.map((m) => ({
-              label: m === g.now ? `✓ ${m}` : m,
-              type: "radio" as const,
+              label: m,
+              type: "checkbox" as const,
               checked: m === g.now,
               click: async () => {
                 try {
@@ -94,155 +426,228 @@ export function setupTray(
                 } catch {
                   /* ignore */
                 }
-                void rebuild();
+                scheduleTrayRebuild();
               },
             })),
           });
         }
       } catch {
-        groupSubmenu = [{ label: "(unavailable)", enabled: false }];
+        /* ignore proxy fetch errors in tray */
       }
     }
 
-    const menu = Menu.buildFromTemplate([
+    const template: Electron.MenuItemConstructorOptions[] = [
       {
-        label: running ? "Stop" : "Start",
+        label: "显示",
+        click: () => {
+          const win = getMainWindow();
+          if (!win) return;
+          win.show();
+          win.focus();
+        },
+      },
+      {
+        label: running ? "停止" : "启动",
         click: async () => {
           try {
             if (running) {
               await supervisor.stop();
               void disableSystemProxy().catch(() => undefined);
-              try {
-                tray?.setTitle("");
-              } catch {
-                /* ignore */
-              }
+              lastUp = 0;
+              lastDown = 0;
+              lastPaintKey = "";
             } else {
               await supervisor.start();
-              if (settings.systemProxy) {
-                void enableSystemProxy(
-                  settings.mixedPort,
-                  settings.bypassDomains,
-                ).catch(() => undefined);
+              const s = loadSettings();
+              if (s.systemProxy) {
+                void enableSystemProxy(s.mixedPort, s.bypassDomains).catch(
+                  () => undefined,
+                );
               }
             }
           } catch {
             /* ignore */
           }
-          void rebuild();
+          getMainWindow()?.webContents.send(
+            "core:state",
+            supervisor.getState(),
+          );
+          scheduleTrayRebuild();
         },
       },
-      { type: "separator" },
-      {
-        label: "Mode",
-        submenu: (["rule", "global", "direct"] as const).map((mode) => ({
-          label: mode,
-          type: "radio" as const,
-          checked: settings.mode === mode,
-          click: async () => {
-            updateSettings({ mode });
-            try {
-              if (supervisor.getState().status === "running") {
-                await supervisor.getApi().setMode(mode);
-              }
-            } catch {
-              /* ignore */
-            }
-            getMainWindow()?.webContents.send(
-              "settings:changed",
-              loadSettings(),
-            );
-            void rebuild();
-          },
-        })),
-      },
-      {
-        label: "System Proxy",
+    ];
+
+    if (process.platform === "darwin") {
+      template.push({
+        label: "网速统计",
         type: "checkbox",
-        checked: settings.systemProxy,
+        checked: !!settings.showTrayTitle,
         click: (item) => {
-          const next = updateSettings({ systemProxy: item.checked });
+          const next = updateSettings({ showTrayTitle: item.checked });
           getMainWindow()?.webContents.send("settings:changed", next);
-          void (async () => {
-            try {
-              if (item.checked && supervisor.getState().status === "running") {
-                await enableSystemProxy(next.mixedPort, next.bypassDomains);
-              } else {
-                await disableSystemProxy();
-              }
-            } catch {
-              /* ignore */
-            }
-            void rebuild();
-          })();
-        },
-      },
-      {
-        label: "TUN",
-        type: "checkbox",
-        checked: settings.tun,
-        click: async (item) => {
-          try {
-            // FlClash: authorize → restart core so setuid applies, then enable TUN
-            if (item.checked) {
-              const auth = await supervisor.authorizeTunBinary();
-              if (!auth.ok) {
-                item.checked = false;
-                return;
-              }
-            }
-            const next = updateSettings({ tun: item.checked });
-            // applySettings restarts when tun differs from runtime process state
-            await supervisor.applySettings(next);
-            getMainWindow()?.webContents.send("settings:changed", next);
-            getMainWindow()?.webContents.send("core:state", supervisor.getState());
-          } catch {
-            item.checked = loadSettings().tun;
-          }
-          void rebuild();
-        },
-      },
-      ...(groupSubmenu.length
-        ? ([{ type: "separator" as const }, { label: "Proxies", submenu: groupSubmenu }] as const)
-        : []),
-      { type: "separator" },
-      {
-        label: "Copy proxy env",
-        click: () => {
-          const s = loadSettings();
-          const host = "127.0.0.1";
-          const port = s.mixedPort;
-          clipboard.writeText(
-            `export https_proxy=http://${host}:${port} http_proxy=http://${host}:${port} all_proxy=socks5://${host}:${port}`,
+          lastPaintKey = "";
+          applyTrayVisual(
+            supervisor.getState().status === "running",
+            loadSettings().tun,
           );
         },
-      },
-      {
-        label: "Show Window",
-        click: () => {
-          const win = getMainWindow();
-          if (win) {
-            win.show();
-            win.focus();
+      });
+    }
+
+    template.push({ type: "separator" });
+
+    for (const mode of ["rule", "global", "direct"] as const) {
+      template.push({
+        label: mode === "rule" ? "规则" : mode === "global" ? "全局" : "直连",
+        type: "checkbox",
+        checked: settings.mode === mode,
+        click: async () => {
+          updateSettings({ mode });
+          try {
+            if (supervisor.getState().status === "running") {
+              await supervisor.getApi().setMode(mode);
+            }
+          } catch {
+            /* ignore */
           }
+          getMainWindow()?.webContents.send(
+            "settings:changed",
+            loadSettings(),
+          );
+          scheduleTrayRebuild();
+        },
+      });
+    }
+
+    template.push({ type: "separator" });
+
+    if (groupItems.length) {
+      template.push(...groupItems, { type: "separator" });
+    }
+
+    if (running) {
+      template.push(
+        {
+          label: "TUN",
+          type: "checkbox",
+          checked: settings.tun,
+          click: async (item) => {
+            try {
+              if (item.checked) {
+                const auth = await supervisor.authorizeTunBinary();
+                if (!auth.ok) {
+                  item.checked = false;
+                  return;
+                }
+              }
+              const next = updateSettings({ tun: item.checked });
+              await supervisor.applySettings(next);
+              getMainWindow()?.webContents.send("settings:changed", next);
+              getMainWindow()?.webContents.send(
+                "core:state",
+                supervisor.getState(),
+              );
+            } catch {
+              item.checked = loadSettings().tun;
+            }
+            scheduleTrayRebuild();
+          },
+        },
+        {
+          label: "系统代理",
+          type: "checkbox",
+          checked: settings.systemProxy,
+          click: (item) => {
+            const next = updateSettings({ systemProxy: item.checked });
+            getMainWindow()?.webContents.send("settings:changed", next);
+            void (async () => {
+              try {
+                if (
+                  item.checked &&
+                  supervisor.getState().status === "running"
+                ) {
+                  await enableSystemProxy(
+                    next.mixedPort,
+                    next.bypassDomains,
+                  );
+                } else {
+                  await disableSystemProxy();
+                }
+              } catch {
+                /* ignore */
+              }
+              scheduleTrayRebuild();
+            })();
+          },
+        },
+        { type: "separator" },
+      );
+    }
+
+    template.push(
+      {
+        label: "开机启动",
+        type: "checkbox",
+        checked: !!settings.startOnLaunch,
+        click: (item) => {
+          const next = updateSettings({ startOnLaunch: item.checked });
+          try {
+            app.setLoginItemSettings({
+              openAtLogin: item.checked,
+              openAsHidden: false,
+            });
+          } catch {
+            /* ignore */
+          }
+          getMainWindow()?.webContents.send("settings:changed", next);
         },
       },
       {
-        label: "Quit",
+        label: "复制环境变量",
+        click: () => copyEnvVar(loadSettings().mixedPort),
+      },
+      { type: "separator" },
+      {
+        label: "退出",
         click: () => onQuit(),
       },
-    ]);
-    tray?.setContextMenu(menu);
-    tray?.setToolTip(
+    );
+
+    const isZh = (app.getLocale() || "").toLowerCase().startsWith("zh");
+    if (!isZh) {
+      const enMap: Record<string, string> = {
+        显示: "Show",
+        停止: "Stop",
+        启动: "Start",
+        网速统计: "Speed statistics",
+        规则: "Rule",
+        全局: "Global",
+        直连: "Direct",
+        系统代理: "System proxy",
+        开机启动: "Open at login",
+        复制环境变量: "Copy env var",
+        退出: "Exit",
+      };
+      for (const item of template) {
+        if (item.label && enMap[item.label]) item.label = enMap[item.label];
+      }
+    }
+
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    const { up, down } = speedLines(lastUp, lastDown);
+    tray.setToolTip(
       running
-        ? `ClashNode · running · :${state.mixedPort}`
+        ? `ClashNode\n↑ ${up}\n↓ ${down}\n:${state.mixedPort}`
         : `ClashNode · ${state.status}`,
     );
   };
 
+  rebuildFn = rebuild;
+
   supervisor.on("state", () => {
-    void rebuild();
+    scheduleTrayRebuild();
   });
+
   tray.on("click", () => {
     const win = getMainWindow();
     if (!win) return;
@@ -255,8 +660,13 @@ export function setupTray(
 }
 
 export function destroyTray() {
+  if (rebuildTimer) clearTimeout(rebuildTimer);
+  if (paintTimer) clearTimeout(paintTimer);
+  rebuildTimer = null;
+  paintTimer = null;
+  rebuildFn = null;
+  lastPaintKey = "";
+  lastIconOnlyKey = "";
   tray?.destroy();
   tray = null;
 }
-
-export type SettingsPatch = Partial<AppSettings>;

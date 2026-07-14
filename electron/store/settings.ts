@@ -109,6 +109,7 @@ export function loadSettings(): AppSettings {
         ? raw.textScale
         : 1,
     checkUpdateOnLaunch: raw.checkUpdateOnLaunch !== false,
+    showTrayTitle: raw.showTrayTitle !== false,
     ports: normalizePorts(raw.ports ?? DEFAULT_PORTS),
     onDemand: normalizeOnDemand(raw.onDemand ?? DEFAULT_ON_DEMAND),
     dashboard: normalizeDashboard(raw.dashboard ?? DEFAULT_DASHBOARD),

@@ -853,6 +853,12 @@ export function SettingsPage() {
             checked={!!draft.minimizeToTray}
             onCheckedChange={(v) => patch("minimizeToTray", v)}
           />
+          <SwitchRow
+            title={t.settings.showTrayTitle}
+            desc={t.settings.showTrayTitleHint}
+            checked={draft.showTrayTitle !== false}
+            onCheckedChange={(v) => patch("showTrayTitle", v)}
+          />
           <div className="space-y-2">
             <Label htmlFor="autoUpdate">{t.settings.autoUpdateHours}</Label>
             <Input

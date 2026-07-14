@@ -276,6 +276,9 @@ const zh = {
     ipv6Hint: "允许解析与连接 IPv6 地址",
     minimizeToTray: "关闭时最小化到托盘",
     minimizeToTrayHint: "关闭窗口时隐藏到菜单栏",
+    showTrayTitle: "菜单栏网速统计",
+    showTrayTitleHint:
+      "在 macOS 菜单栏以双行显示实时上下行速度（绘制在图标内，类似 FlClash / Surge）",
     startOnLaunch: "登录时启动",
     startOnLaunchHint: "开机登录后自动打开 ClashNode",
     autoStartCore: "启动时拉起内核",
@@ -667,6 +670,9 @@ const en: Dict = {
     ipv6Hint: "Allow resolving and connecting over IPv6",
     minimizeToTray: "Minimize to tray",
     minimizeToTrayHint: "Hide window on close",
+    showTrayTitle: "Menu bar speed",
+    showTrayTitleHint:
+      "Show live up/down speed as two lines in the macOS menu bar (drawn into the tray icon, FlClash/Surge-style)",
     startOnLaunch: "Open at login",
     startOnLaunchHint: "Launch ClashNode when you log in",
     autoStartCore: "Start core on launch",
