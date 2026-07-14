@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  ClipboardPaste,
+  Code2,
+  Eye,
   FileCode2,
   FileUp,
+  GripVertical,
   Link2,
+  ListTree,
   Pencil,
+  QrCode,
   RefreshCw,
   Star,
   Trash2,
@@ -27,6 +33,7 @@ import {
 import { useAppStore } from "@/shared/hooks/use-app-state";
 import { getApi } from "@/shared/lib/api";
 import { cn, formatBytes, formatDate } from "@/shared/lib/utils";
+import { decodeQrFromFile, extractSubscriptionUrl } from "@/shared/lib/qr";
 import { useI18n } from "@/shared/i18n";
 import type { Profile } from "@/entities/mihomo/types";
 
@@ -54,6 +61,26 @@ export function ProfilesPage() {
   const [yamlText, setYamlText] = useState("");
   const [yamlBusy, setYamlBusy] = useState(false);
 
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [rulesId, setRulesId] = useState<string | null>(null);
+  const [rulesName, setRulesName] = useState("");
+  const [rulesText, setRulesText] = useState("");
+  const [rulesBusy, setRulesBusy] = useState(false);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewName, setPreviewName] = useState("");
+  const [previewText, setPreviewText] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  const qrInputRef = useRef<HTMLInputElement>(null);
+
+  const [scriptOpen, setScriptOpen] = useState(false);
+  const [scriptProfile, setScriptProfile] = useState<Profile | null>(null);
+  const [scriptId, setScriptId] = useState<string>("");
+  const [scriptList, setScriptList] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
+  const [scriptBusy, setScriptBusy] = useState(false);
+
   async function addUrl() {
     if (!url.trim()) return;
     setBusy(true);
@@ -79,6 +106,114 @@ export function ProfilesPage() {
       toast.success(t.profiles.fileAdded);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function importClipboard() {
+    try {
+      await getApi().importClipboard();
+      await refreshProfiles();
+      toast.success(t.profiles.clipboardImported);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function importQrFile(file: File) {
+    try {
+      const raw = await decodeQrFromFile(file);
+      if (!raw) throw new Error(t.profiles.qrEmpty);
+      const url = extractSubscriptionUrl(raw);
+      if (!url) throw new Error(t.profiles.qrNoUrl);
+      await getApi().addProfileUrl(url);
+      await refreshProfiles();
+      toast.success(t.profiles.qrImported);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function openPreview(p: Profile) {
+    try {
+      const text = await getApi().getMergedPreview(p.id);
+      setPreviewName(p.name);
+      setPreviewText(text);
+      setPreviewOpen(true);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onDropReorder(targetId: string) {
+    if (!dragId || dragId === targetId || !profiles) return;
+    const ids = profiles.items.map((x) => x.id);
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, dragId);
+    try {
+      setProfiles(await getApi().reorderProfiles(ids));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDragId(null);
+    }
+  }
+
+  function openRules(p: Profile) {
+    setRulesId(p.id);
+    setRulesName(p.name);
+    setRulesText((p.prependRules ?? []).join("\n"));
+    setRulesOpen(true);
+  }
+
+  async function saveRules() {
+    if (!rulesId) return;
+    setRulesBusy(true);
+    try {
+      const rules = rulesText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      await getApi().setPrependRules(rulesId, rules);
+      await refreshProfiles();
+      setRulesOpen(false);
+      toast.success(t.profiles.overwriteSaved);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRulesBusy(false);
+    }
+  }
+
+  async function openScript(p: Profile) {
+    try {
+      const list = await getApi().listScripts();
+      setScriptList(list);
+      setScriptProfile(p);
+      setScriptId(p.scriptId || "");
+      setScriptOpen(true);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function saveScriptBinding() {
+    if (!scriptProfile) return;
+    setScriptBusy(true);
+    try {
+      await getApi().setProfileScript(
+        scriptProfile.id,
+        scriptId ? scriptId : null,
+      );
+      await refreshProfiles();
+      setScriptOpen(false);
+      toast.success(t.profiles.scriptSaved);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScriptBusy(false);
     }
   }
 
@@ -179,12 +314,41 @@ export function ProfilesPage() {
   const items = profiles?.items ?? [];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageHeader
         title={t.profiles.title}
         description={t.profiles.desc}
         actions={
           <>
+            <input
+              ref={qrInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void importQrFile(f);
+              }}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => qrInputRef.current?.click()}
+            >
+              <QrCode className="size-3.5" strokeWidth={1.8} />
+              {t.profiles.importQr}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => void importClipboard()}
+            >
+              <ClipboardPaste className="size-3.5" strokeWidth={1.8} />
+              {t.profiles.importClipboard}
+            </Button>
             <Button
               variant="secondary"
               size="sm"
@@ -212,11 +376,21 @@ export function ProfilesPage() {
           return (
             <Card
               key={p.id}
+              draggable
+              onDragStart={() => setDragId(p.id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => void onDropReorder(p.id)}
+              onDragEnd={() => setDragId(null)}
               className={cn(
                 "flex flex-wrap items-center gap-3 p-4",
                 active && "ring-1 ring-ring/30",
+                dragId === p.id && "opacity-60",
               )}
             >
+              <GripVertical
+                className="size-4 shrink-0 cursor-grab text-muted-foreground"
+                strokeWidth={1.8}
+              />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="truncate text-sm font-medium">{p.name}</p>
@@ -226,6 +400,14 @@ export function ProfilesPage() {
                   <Badge variant="secondary">{p.type}</Badge>
                   {p.type === "url" && p.autoUpdate ? (
                     <Badge variant="outline">{t.profiles.autoUpdate}</Badge>
+                  ) : null}
+                  {p.prependRules?.length ? (
+                    <Badge variant="secondary">
+                      {t.profiles.overwriteRules} · {p.prependRules.length}
+                    </Badge>
+                  ) : null}
+                  {p.scriptId ? (
+                    <Badge variant="outline">{t.profiles.script}</Badge>
                   ) : null}
                 </div>
                 <p className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -256,11 +438,41 @@ export function ProfilesPage() {
                   variant="ghost"
                   size="icon"
                   className="size-7 text-muted-foreground"
+                  onClick={() => void openPreview(p)}
+                  aria-label={t.profiles.preview}
+                  title={t.profiles.preview}
+                >
+                  <Eye className="size-3.5" strokeWidth={1.8} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
                   onClick={() => openEdit(p)}
                   aria-label={t.profiles.edit}
                   title={t.profiles.edit}
                 >
                   <Pencil className="size-3.5" strokeWidth={1.8} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  onClick={() => openRules(p)}
+                  aria-label={t.profiles.overwriteRules}
+                  title={t.profiles.overwriteRules}
+                >
+                  <ListTree className="size-3.5" strokeWidth={1.8} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  onClick={() => void openScript(p)}
+                  aria-label={t.profiles.script}
+                  title={t.profiles.script}
+                >
+                  <Code2 className="size-3.5" strokeWidth={1.8} />
                 </Button>
                 <Button
                   variant="ghost"
@@ -418,6 +630,141 @@ export function ProfilesPage() {
               onClick={() => void saveEdit()}
             >
               {editBusy ? t.profiles.saving : t.profiles.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Merged runtime preview */}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t.profiles.preview}
+              {previewName ? ` · ${previewName}` : ""}
+            </DialogTitle>
+            <DialogDescription>{t.profiles.previewDesc}</DialogDescription>
+          </DialogHeader>
+          <textarea
+            readOnly
+            value={previewText}
+            spellCheck={false}
+            className="h-[min(60vh,480px)] w-full resize-y rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5"
+          />
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPreviewOpen(false)}
+            >
+              {t.profiles.cancel}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                void getApi().copyText(previewText);
+                toast.success(t.settings.copied);
+              }}
+            >
+              {t.settings.copy}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Script binding */}
+      <Dialog
+        open={scriptOpen}
+        onOpenChange={(open) => {
+          setScriptOpen(open);
+          if (!open) setScriptProfile(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t.profiles.script}
+              {scriptProfile ? ` · ${scriptProfile.name}` : ""}
+            </DialogTitle>
+            <DialogDescription>{t.profiles.scriptHint}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="profile-script">{t.profiles.script}</Label>
+            <select
+              id="profile-script"
+              value={scriptId}
+              onChange={(e) => setScriptId(e.target.value)}
+              className="flex h-8 w-full rounded-md border border-input bg-secondary/55 px-3 text-xs focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="">{t.profiles.scriptNone}</option>
+              {scriptList.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setScriptOpen(false)}
+            >
+              {t.profiles.cancel}
+            </Button>
+            <Button
+              size="sm"
+              disabled={scriptBusy}
+              onClick={() => void saveScriptBinding()}
+            >
+              {scriptBusy ? t.profiles.saving : t.profiles.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Prepend rules overwrite */}
+      <Dialog
+        open={rulesOpen}
+        onOpenChange={(open) => {
+          setRulesOpen(open);
+          if (!open) {
+            setRulesId(null);
+            setRulesText("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-[640px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t.profiles.overwriteRules}
+              {rulesName ? ` · ${rulesName}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {t.profiles.overwriteRulesHint}
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            value={rulesText}
+            onChange={(e) => setRulesText(e.target.value)}
+            spellCheck={false}
+            placeholder={"DOMAIN-SUFFIX,example.com,PROXY\nGEOIP,CN,DIRECT"}
+            className="h-[min(40vh,320px)] w-full resize-y rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setRulesOpen(false)}
+            >
+              {t.profiles.cancel}
+            </Button>
+            <Button
+              size="sm"
+              disabled={rulesBusy}
+              onClick={() => void saveRules()}
+            >
+              {rulesBusy ? t.profiles.saving : t.profiles.save}
             </Button>
           </DialogFooter>
         </DialogContent>

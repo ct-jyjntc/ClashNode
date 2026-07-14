@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity,
+  Boxes,
+  Code2,
+  Database,
   FileText,
   Globe2,
   LayoutDashboard,
@@ -9,6 +11,7 @@ import {
   Network,
   PanelLeft,
   PanelLeftClose,
+  Radio,
   Settings2,
   Waypoints,
 } from "lucide-react";
@@ -53,8 +56,12 @@ export function AppShell() {
     { to: "/", label: t.nav.dashboard, icon: LayoutDashboard },
     { to: "/proxies", label: t.nav.proxies, icon: Waypoints },
     { to: "/profiles", label: t.nav.profiles, icon: Globe2 },
+    { to: "/providers", label: t.nav.providers, icon: Boxes },
+    { to: "/requests", label: t.nav.requests, icon: Radio },
     { to: "/connections", label: t.nav.connections, icon: Network },
     { to: "/rules", label: t.nav.rules, icon: ListTree },
+    { to: "/resources", label: t.nav.resources, icon: Database },
+    { to: "/scripts", label: t.nav.scripts, icon: Code2 },
     { to: "/logs", label: t.nav.logs, icon: FileText },
     { to: "/settings", label: t.nav.settings, icon: Settings2 },
   ] as const;
@@ -104,8 +111,7 @@ export function AppShell() {
             >
               {toggleBtn}
               {!collapsed ? (
-                <div className="flex min-w-0 items-center gap-2 pr-2">
-                  <Activity className="size-4 shrink-0" strokeWidth={1.8} />
+                <div className="flex min-w-0 items-center pr-2">
                   <span className="truncate text-sm font-semibold">
                     {t.appName}
                   </span>
@@ -212,7 +218,11 @@ export function AppShell() {
             Height chain for list pages:
             content column (h-screen) → main (flex-1 basis-0 min-h-0) → ListPage → ListPanel
           */}
-          <main className="mx-auto flex w-full min-h-0 max-w-[1280px] flex-1 basis-0 flex-col overflow-y-auto px-5 pb-6 pt-1 sm:px-8">
+          {/*
+            Asymmetric horizontal padding: left is tighter so the gap after the
+            sidebar matches the right window edge more closely.
+          */}
+          <main className="mx-auto flex w-full min-h-0 max-w-[1280px] flex-1 basis-0 flex-col overflow-y-auto pb-6 pl-3 pr-5 pt-1 sm:pl-4 sm:pr-8">
             <Outlet />
           </main>
         </div>

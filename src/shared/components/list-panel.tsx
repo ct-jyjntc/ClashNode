@@ -88,7 +88,8 @@ export function ListPage({
   return (
     <div
       className={cn(
-        "flex min-h-0 flex-1 basis-0 flex-col gap-3 overflow-hidden",
+        // Shared title→content rhythm (space-y-6 / gap-6)
+        "flex min-h-0 flex-1 basis-0 flex-col gap-6 overflow-hidden",
         className,
       )}
     >

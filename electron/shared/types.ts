@@ -23,6 +23,16 @@ export interface HotkeySettings {
   showWindow: string;
 }
 
+export interface WebDavSettings {
+  enabled: boolean;
+  url: string;
+  username: string;
+  password: string;
+  path: string;
+}
+
+export type ThemeMode = "system" | "light" | "dark";
+
 export interface AppSettings {
   mixedPort: number;
   allowLan: boolean;
@@ -44,6 +54,12 @@ export interface AppSettings {
   bypassDomains: string[];
   dns: DnsSettings;
   hotkeys: HotkeySettings;
+  webdav: WebDavSettings;
+  /** UI accent as #rrggbb; empty = monochrome default */
+  accentColor: string;
+  /** UI text scale 0.85–1.25 */
+  textScale: number;
+  checkUpdateOnLaunch: boolean;
 }
 
 export interface SubscriptionInfo {
@@ -64,6 +80,12 @@ export interface Profile {
   createdAt: string;
   subscriptionInfo?: SubscriptionInfo;
   error?: string;
+  /** group name → selected proxy name */
+  selectedMap?: Record<string, string>;
+  /** Rules prepended before subscription rules */
+  prependRules?: string[];
+  /** Optional JS overwrite script id (main(config) → config) */
+  scriptId?: string | null;
 }
 
 export interface ProfilesState {
@@ -156,7 +178,42 @@ export interface ProviderInfo {
   updatedAt?: string;
   subscriptionInfo?: SubscriptionInfo;
   proxies?: ProxyNode[];
+  provider?: string;
 }
+
+export interface ProvidersResponse {
+  providers: Record<string, ProviderInfo>;
+}
+
+export interface RequestItem {
+  id: string;
+  time: string;
+  host: string;
+  process?: string;
+  rule: string;
+  rulePayload?: string;
+  chains: string[];
+  network?: string;
+  type?: string;
+  upload: number;
+  download: number;
+}
+
+export interface GeoResourceFile {
+  name: string;
+  path: string;
+  exists: boolean;
+  size: number;
+  mtime?: string;
+}
+
+export const DEFAULT_WEBDAV: WebDavSettings = {
+  enabled: false,
+  url: "",
+  username: "",
+  password: "",
+  path: "/ClashNode",
+};
 
 export const DEFAULT_BYPASS = [
   "127.0.0.1",
@@ -210,4 +267,38 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bypassDomains: [...DEFAULT_BYPASS],
   dns: { ...DEFAULT_DNS, defaultNameserver: [...DEFAULT_DNS.defaultNameserver], nameserver: [...DEFAULT_DNS.nameserver], fallback: [...DEFAULT_DNS.fallback] },
   hotkeys: { ...DEFAULT_HOTKEYS },
+  webdav: { ...DEFAULT_WEBDAV },
+  accentColor: "",
+  textScale: 1,
+  checkUpdateOnLaunch: true,
+};
+
+export interface UpdateCheckResult {
+  current: string;
+  latest: string | null;
+  htmlUrl: string | null;
+  hasUpdate: boolean;
+  checkedAt: string;
+  error?: string;
+}
+
+export const GEO_FILES = [
+  "geoip.metadb",
+  "GeoIP.dat",
+  "GeoSite.dat",
+  "ASN.mmdb",
+  "country.mmdb",
+] as const;
+
+export const GEO_DOWNLOADS: Record<string, string> = {
+  "geoip.metadb":
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+  "GeoIP.dat":
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+  "GeoSite.dat":
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+  "ASN.mmdb":
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
+  "country.mmdb":
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
 };

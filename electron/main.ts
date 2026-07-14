@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { CoreSupervisor } from "./core/supervisor";
+import { mergeConfig } from "./core/config-merger";
 import { loadSettings, updateSettings } from "./store/settings";
 import {
   addProfileFromFile,
@@ -20,12 +21,25 @@ import {
   loadProfilesState,
   readProfileYaml,
   renameProfile,
+  reorderProfiles,
   saveProfileContent,
   setCurrentProfile,
+  saveProfilesState,
+  setPrependRules,
+  setProfileScript,
+  setSelectedProxy,
   updateProfile,
   type ProfileEditPatch,
 } from "./store/profiles";
-// updateProfile used by auto-refresh scheduler
+import {
+  createScript,
+  deleteScript,
+  listScripts,
+  readScriptContent,
+  renameScript,
+  saveScriptContent,
+  DEFAULT_SCRIPT,
+} from "./store/scripts";
 import {
   getConfigPath,
   getHomeDir,
@@ -34,10 +48,21 @@ import {
   getSettingsPath,
   getProfilesStatePath,
 } from "./store/paths";
+import { downloadAllGeo, downloadGeoFile, listGeoFiles } from "./store/geo";
+import {
+  webdavDownloadBackup,
+  webdavTest,
+  webdavUploadBackup,
+} from "./store/webdav";
 import { disableSystemProxy, enableSystemProxy } from "./system/proxy-mac";
-import { destroyTray, setupTray } from "./system/tray";
+import { destroyTray, setTrayTraffic, setupTray } from "./system/tray";
 import { registerHotkeys, unregisterHotkeys } from "./system/hotkeys";
-import type { AppSettings, ProxyMode, TrafficSnapshot } from "./shared/types";
+import type {
+  AppSettings,
+  ProxyMode,
+  RequestItem,
+  TrafficSnapshot,
+} from "./shared/types";
 import { spawn } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,26 +71,65 @@ let mainWindow: BrowserWindow | null = null;
 const supervisor = new CoreSupervisor();
 let isQuitting = false;
 let trafficWs: WebSocket | null = null;
+let connectionsWs: WebSocket | null = null;
+const requestRing: RequestItem[] = [];
+const MAX_REQUESTS = 500;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 }
 
-app.on("second-instance", () => {
+async function handleDeepLink(raw: string) {
+  try {
+    const url = new URL(raw);
+    // clash://install-config?url=...  or clashnode://import?url=...
+    const sub =
+      url.searchParams.get("url") ||
+      url.searchParams.get("config") ||
+      (url.pathname.startsWith("http") ? url.pathname : "");
+    if (sub && /^https?:\/\//i.test(decodeURIComponent(sub))) {
+      const target = decodeURIComponent(sub);
+      await addProfileFromUrl(target);
+      mainWindow?.webContents.send("core:log", {
+        type: "info",
+        payload: `[deeplink] imported ${target}`,
+      });
+      mainWindow?.show();
+      mainWindow?.focus();
+      return;
+    }
+  } catch (e) {
+    mainWindow?.webContents.send("core:log", {
+      type: "warning",
+      payload: `[deeplink] ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+}
+
+app.on("second-instance", (_e, argv) => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
   }
+  const link = argv.find(
+    (a) => a.startsWith("clash://") || a.startsWith("clashnode://"),
+  );
+  if (link) void handleDeepLink(link);
+});
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  void handleDeepLink(url);
 });
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 760,
-    minWidth: 960,
-    minHeight: 640,
+    width: 1111,
+    height: 750,
+    minWidth: 1111,
+    minHeight: 750,
     title: "ClashNode",
     // Custom traffic lights; CSS -webkit-app-region:drag on top safe area
     titleBarStyle: "hiddenInset",
@@ -124,6 +188,7 @@ function startTrafficPoll() {
       try {
         const data = JSON.parse(String(raw)) as TrafficSnapshot;
         mainWindow?.webContents.send("traffic:update", data);
+        setTrayTraffic(data.up ?? 0, data.down ?? 0);
       } catch {
         /* ignore */
       }
@@ -138,6 +203,66 @@ function startTrafficPoll() {
   } catch {
     /* ignore */
   }
+
+  // Track connection snapshots → request feed
+  try {
+    connectionsWs = new WebSocket(
+      `ws://${state.controller}/connections?interval=1000`,
+      { headers },
+    );
+    const seen = new Set<string>();
+    connectionsWs.on("message", (raw) => {
+      try {
+        const data = JSON.parse(String(raw)) as {
+          connections?: Array<{
+            id: string;
+            upload: number;
+            download: number;
+            start: string;
+            chains: string[];
+            rule: string;
+            rulePayload?: string;
+            metadata?: Record<string, string>;
+          }>;
+        };
+        for (const c of data.connections ?? []) {
+          if (seen.has(c.id)) continue;
+          seen.add(c.id);
+          const item: RequestItem = {
+            id: c.id,
+            time: c.start || new Date().toISOString(),
+            host:
+              c.metadata?.host ||
+              `${c.metadata?.destinationIP ?? ""}:${c.metadata?.destinationPort ?? ""}`,
+            process: c.metadata?.process,
+            rule: c.rule,
+            rulePayload: c.rulePayload,
+            chains: c.chains ?? [],
+            network: c.metadata?.network,
+            type: c.metadata?.type,
+            upload: c.upload,
+            download: c.download,
+          };
+          requestRing.unshift(item);
+          if (requestRing.length > MAX_REQUESTS) requestRing.pop();
+          mainWindow?.webContents.send("requests:item", item);
+        }
+        // prevent unbounded seen set
+        if (seen.size > 5000) seen.clear();
+      } catch {
+        /* ignore */
+      }
+    });
+    connectionsWs.on("close", () => {
+      connectionsWs = null;
+    });
+    connectionsWs.on("error", () => {
+      connectionsWs?.close();
+      connectionsWs = null;
+    });
+  } catch {
+    /* ignore */
+  }
 }
 
 function stopTrafficPoll() {
@@ -148,6 +273,14 @@ function stopTrafficPoll() {
       /* ignore */
     }
     trafficWs = null;
+  }
+  if (connectionsWs) {
+    try {
+      connectionsWs.close();
+    } catch {
+      /* ignore */
+    }
+    connectionsWs = null;
   }
 }
 
@@ -308,7 +441,7 @@ function registerIpc() {
       } else if (needsCorePatch) {
         await supervisor.applySettings(next);
       } else if (needsDnsReload) {
-        supervisor.writeRuntimeConfig(next);
+        await supervisor.writeRuntimeConfig(next);
       }
     }
 
@@ -388,7 +521,7 @@ function registerIpc() {
     if (supervisor.getState().status === "running") {
       await supervisor.reloadConfig();
     } else {
-      supervisor.writeRuntimeConfig();
+      await supervisor.writeRuntimeConfig();
     }
     return state;
   });
@@ -410,7 +543,7 @@ function registerIpc() {
       if (state.currentId === id && supervisor.getState().status === "running") {
         await supervisor.reloadConfig();
       } else if (state.currentId === id) {
-        supervisor.writeRuntimeConfig();
+        await supervisor.writeRuntimeConfig();
       }
       return profile;
     },
@@ -434,8 +567,13 @@ function registerIpc() {
   ipcMain.handle("api:proxies", () => withApi((api) => api.proxies()));
   ipcMain.handle(
     "api:select-proxy",
-    (_e, { group, name }: { group: string; name: string }) =>
-      withApi((api) => api.selectProxy(group, name)),
+    async (_e, { group, name }: { group: string; name: string }) => {
+      await withApi((api) => api.selectProxy(group, name));
+      const st = loadProfilesState();
+      if (st.currentId) {
+        setSelectedProxy(st.currentId, group, name);
+      }
+    },
   );
   ipcMain.handle("api:delay", (_e, name: string) => {
     const url = loadSettings().testUrl;
@@ -453,6 +591,12 @@ function registerIpc() {
   ipcMain.handle("api:update-provider", (_e, name: string) =>
     withApi((api) => api.updateProvider(name)),
   );
+  ipcMain.handle("api:healthcheck-provider", (_e, name: string) =>
+    withApi((api) => api.healthcheckProvider(name)),
+  );
+  ipcMain.handle("api:flush-fakeip", () => withApi((api) => api.flushFakeIp()));
+  ipcMain.handle("api:flush-dns", () => withApi((api) => api.flushDns()));
+  ipcMain.handle("api:upgrade-geo", () => withApi((api) => api.upgradeGeo()));
   ipcMain.handle("api:set-mode", async (_e, mode: ProxyMode) => {
     updateSettings({ mode });
     await withApi((api) => api.setMode(mode));
@@ -466,6 +610,124 @@ function registerIpc() {
     return { controller: s.controller, secret: s.secret };
   });
 
+  ipcMain.handle("requests:list", () => requestRing.slice(0, MAX_REQUESTS));
+  ipcMain.handle("requests:clear", () => {
+    requestRing.length = 0;
+    return true;
+  });
+
+  ipcMain.handle("profiles:set-prepend-rules", async (_e, { id, rules }: { id: string; rules: string[] }) => {
+    const p = setPrependRules(id, rules);
+    const st = loadProfilesState();
+    if (st.currentId === id) {
+      if (supervisor.getState().status === "running") {
+        await supervisor.reloadConfig();
+        const cur = st.items.find((x) => x.id === id);
+        if (cur?.selectedMap) await supervisor.applySelectedMap(cur.selectedMap);
+      } else {
+        await supervisor.writeRuntimeConfig();
+      }
+    }
+    return p;
+  });
+  ipcMain.handle("profiles:reorder", (_e, ids: string[]) => reorderProfiles(ids));
+  ipcMain.handle("profiles:merged-preview", async (_e, id?: string) => {
+    const st = loadProfilesState();
+    const pid = id || st.currentId;
+    const settings = loadSettings();
+    const secret = supervisor.getState().secret;
+    if (!pid) {
+      const { yaml: text } = await mergeConfig(null, settings, secret);
+      return text;
+    }
+    const profile = st.items.find((p) => p.id === pid);
+    const yaml = readProfileYaml(pid);
+    const { yaml: text } = await mergeConfig(yaml, settings, secret, {
+      prependRules: profile?.prependRules,
+      scriptId: profile?.scriptId,
+    });
+    return text;
+  });
+  ipcMain.handle(
+    "profiles:set-script",
+    async (_e, { id, scriptId }: { id: string; scriptId: string | null }) => {
+      const next = setProfileScript(id, scriptId);
+      const st = loadProfilesState();
+      if (st.currentId === id) {
+        if (supervisor.getState().status === "running") {
+          await supervisor.reloadConfig();
+        } else {
+          await supervisor.writeRuntimeConfig();
+        }
+      }
+      return next;
+    },
+  );
+
+  ipcMain.handle("scripts:list", () => listScripts());
+  ipcMain.handle("scripts:create", (_e, name?: string) => createScript(name));
+  ipcMain.handle(
+    "scripts:rename",
+    (_e, { id, name }: { id: string; name: string }) => renameScript(id, name),
+  );
+  ipcMain.handle("scripts:content", (_e, id: string) => readScriptContent(id));
+  ipcMain.handle(
+    "scripts:save",
+    (_e, { id, content }: { id: string; content: string }) =>
+      saveScriptContent(id, content),
+  );
+  ipcMain.handle("scripts:delete", (_e, id: string) => {
+    const st = loadProfilesState();
+    let changed = false;
+    for (const p of st.items) {
+      if (p.scriptId === id) {
+        p.scriptId = null;
+        changed = true;
+      }
+    }
+    if (changed) saveProfilesState(st);
+    return deleteScript(id);
+  });
+  ipcMain.handle("scripts:default", () => DEFAULT_SCRIPT);
+  ipcMain.handle("profiles:import-clipboard", async () => {
+    const text = clipboard.readText().trim();
+    if (!text) throw new Error("Clipboard is empty");
+    if (/^https?:\/\//i.test(text)) {
+      const profile = await addProfileFromUrl(text);
+      return { type: "url" as const, profile };
+    }
+    // treat as yaml content
+    const tmp = path.join(getHomeDir(), `clipboard-${Date.now()}.yaml`);
+    fs.writeFileSync(tmp, text, "utf8");
+    try {
+      const profile = await addProfileFromFile(tmp, "Clipboard");
+      return { type: "file" as const, profile };
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  ipcMain.handle("geo:list", () => listGeoFiles());
+  ipcMain.handle("geo:download", (_e, name: string) => downloadGeoFile(name));
+  ipcMain.handle("geo:download-all", () => downloadAllGeo());
+
+  ipcMain.handle("webdav:test", () => webdavTest(loadSettings().webdav));
+  ipcMain.handle("webdav:upload", () =>
+    webdavUploadBackup(loadSettings().webdav),
+  );
+  ipcMain.handle("webdav:download", async () => {
+    await webdavDownloadBackup(loadSettings().webdav);
+    if (supervisor.getState().status === "running") {
+      await supervisor.restart();
+    }
+    mainWindow?.webContents.send("settings:changed", loadSettings());
+    return true;
+  });
+
   ipcMain.handle("system:proxy", async (_e, enabled: boolean) => {
     const next = updateSettings({ systemProxy: enabled });
     await syncSystemProxy(next, supervisor.getState().status === "running");
@@ -473,6 +735,65 @@ function registerIpc() {
     return next;
   });
   ipcMain.handle("system:authorize-tun", () => supervisor.authorizeTunBinary());
+  ipcMain.handle("system:copy-proxy-env", () => {
+    const s = loadSettings();
+    const host = "127.0.0.1";
+    const port = s.mixedPort;
+    const text = [
+      `export https_proxy=http://${host}:${port} http_proxy=http://${host}:${port} all_proxy=socks5://${host}:${port}`,
+      `export HTTPS_PROXY=http://${host}:${port} HTTP_PROXY=http://${host}:${port} ALL_PROXY=socks5://${host}:${port}`,
+    ].join("\n");
+    clipboard.writeText(text);
+    return text;
+  });
+
+  ipcMain.handle("app:check-update", async () => {
+    const current = app.getVersion();
+    try {
+      const res = await fetch(
+        "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest",
+        {
+          headers: {
+            "User-Agent": "ClashNode/0.1",
+            Accept: "application/vnd.github+json",
+          },
+        },
+      );
+      if (!res.ok) {
+        return {
+          current,
+          latest: null,
+          htmlUrl: null,
+          hasUpdate: false,
+          checkedAt: new Date().toISOString(),
+          error: `HTTP ${res.status}`,
+        };
+      }
+      const data = (await res.json()) as {
+        tag_name?: string;
+        html_url?: string;
+      };
+      const latest = (data.tag_name || "").replace(/^v/, "");
+      const curCore = supervisor.getState().version?.replace(/^v/, "") || "";
+      const hasUpdate = !!(latest && curCore && latest !== curCore);
+      return {
+        current: curCore || current,
+        latest: latest || null,
+        htmlUrl: data.html_url || "https://github.com/MetaCubeX/mihomo/releases",
+        hasUpdate,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (e) {
+      return {
+        current,
+        latest: null,
+        htmlUrl: null,
+        hasUpdate: false,
+        checkedAt: new Date().toISOString(),
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  });
 
   ipcMain.handle("backup:create", async () => {
     const res = await dialog.showSaveDialog({
@@ -536,10 +857,23 @@ async function gracefulQuit() {
   app.exit(0);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    app.setAsDefaultProtocolClient("clash");
+    app.setAsDefaultProtocolClient("clashnode");
+  } catch {
+    /* ignore when unpackaged */
+  }
+
   registerIpc();
   createWindow();
   setupTray(supervisor, () => mainWindow, () => void gracefulQuit());
+
+  // cold-start deep link (macOS may pass via argv on some builds)
+  const bootLink = process.argv.find(
+    (a) => a.startsWith("clash://") || a.startsWith("clashnode://"),
+  );
+  if (bootLink) void handleDeepLink(bootLink);
 
   supervisor.on("state", () => broadcastState());
   supervisor.on("log", (line) => {
@@ -552,7 +886,7 @@ app.whenReady().then(() => {
   scheduleProfileUpdates();
 
   try {
-    supervisor.writeRuntimeConfig();
+    await supervisor.writeRuntimeConfig();
   } catch {
     /* ignore */
   }

@@ -260,6 +260,56 @@ export function saveProfileContent(id: string, content: string) {
   return p;
 }
 
+export function setSelectedProxy(
+  profileId: string,
+  group: string,
+  name: string,
+) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.selectedMap = { ...(p.selectedMap ?? {}), [group]: name };
+  saveProfilesState(state);
+  return p;
+}
+
+export function setPrependRules(profileId: string, rules: string[]) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.prependRules = rules
+    .map((r) => r.trim())
+    .filter(Boolean);
+  saveProfilesState(state);
+  return p;
+}
+
+export function setProfileScript(profileId: string, scriptId: string | null) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.scriptId = scriptId;
+  saveProfilesState(state);
+  return p;
+}
+
+export function reorderProfiles(ids: string[]) {
+  const state = loadProfilesState();
+  const map = new Map(state.items.map((p) => [p.id, p]));
+  const next: typeof state.items = [];
+  for (const id of ids) {
+    const p = map.get(id);
+    if (p) {
+      next.push(p);
+      map.delete(id);
+    }
+  }
+  for (const p of map.values()) next.push(p);
+  state.items = next;
+  saveProfilesState(state);
+  return state;
+}
+
 /** Some providers return base64-encoded YAML or plain share-links. */
 function maybeDecodeSubscription(text: string): string {
   const trimmed = text.trim();

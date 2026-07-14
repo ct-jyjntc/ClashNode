@@ -20,6 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAppStore } from "@/shared/hooks/use-app-state";
 import { getApi } from "@/shared/lib/api";
+import { applyUiChrome } from "@/shared/lib/theme-accent";
 import { useI18n, type Locale } from "@/shared/i18n";
 import type {
   AppSettings,
@@ -141,6 +142,14 @@ export function SettingsPage() {
   const [defaultNsText, setDefaultNsText] = useState("");
   const [nameserverText, setNameserverText] = useState("");
   const [fallbackText, setFallbackText] = useState("");
+  const [updateInfo, setUpdateInfo] = useState<{
+    current: string;
+    latest: string | null;
+    htmlUrl: string | null;
+    hasUpdate: boolean;
+    error?: string;
+  } | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
 
@@ -151,6 +160,10 @@ export function SettingsPage() {
     setDefaultNsText(formatList(settings.dns?.defaultNameserver));
     setNameserverText(formatList(settings.dns?.nameserver));
     setFallbackText(formatList(settings.dns?.fallback));
+    applyUiChrome({
+      accentColor: settings.accentColor,
+      textScale: settings.textScale,
+    });
   }, [settings]);
 
   useEffect(() => {
@@ -223,13 +236,38 @@ export function SettingsPage() {
           toggleTun: draft.hotkeys.toggleTun.trim(),
           showWindow: draft.hotkeys.showWindow.trim(),
         },
+        accentColor: (draft.accentColor || "").trim(),
+        textScale: Math.min(
+          1.25,
+          Math.max(0.85, Number(draft.textScale) || 1),
+        ),
       };
-      setSettings(await getApi().updateSettings(payload));
+      const next = await getApi().updateSettings(payload);
+      setSettings(next);
+      applyUiChrome({
+        accentColor: next.accentColor,
+        textScale: next.textScale,
+      });
       toast.success(t.settings.saved);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function checkUpdate() {
+    setUpdateBusy(true);
+    try {
+      const r = await getApi().checkUpdate();
+      setUpdateInfo(r);
+      if (r.error) toast.error(r.error);
+      else if (r.hasUpdate) toast.success(t.settings.updateAvailable);
+      else toast.success(t.settings.updateNone);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdateBusy(false);
     }
   }
 
@@ -298,10 +336,55 @@ export function SettingsPage() {
     }
   }
 
+  function patchWebdav<K extends keyof NonNullable<AppSettings["webdav"]>>(
+    key: K,
+    value: NonNullable<AppSettings["webdav"]>[K],
+  ) {
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            webdav: { ...d.webdav, [key]: value },
+          }
+        : d,
+    );
+  }
+
+  async function webdavTest() {
+    try {
+      // persist draft first so main uses latest credentials
+      if (draft) setSettings(await getApi().updateSettings({ webdav: draft.webdav }));
+      const r = await getApi().webdavTest();
+      toast.success(`${t.settings.webdavOk} · HTTP ${r.httpStatus}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function webdavUpload() {
+    try {
+      if (draft) setSettings(await getApi().updateSettings({ webdav: draft.webdav }));
+      const remote = await getApi().webdavUpload();
+      toast.success(`${t.settings.webdavUploaded}: ${remote}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function webdavDownload() {
+    try {
+      if (draft) setSettings(await getApi().updateSettings({ webdav: draft.webdav }));
+      await getApi().webdavDownload();
+      toast.success(t.settings.webdavRestored);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const endpoint = `http://${draft.externalController}`;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <PageHeader
         title={t.settings.title}
         description={t.settings.desc}
@@ -339,6 +422,58 @@ export function SettingsPage() {
             </Tabs>
             <p className="text-[11px] text-muted-foreground">
               {t.settings.themeHint}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="accent">{t.settings.accent}</Label>
+            <div className="flex gap-2">
+              <Input
+                id="accent"
+                value={draft.accentColor || ""}
+                onChange={(e) => patch("accentColor", e.target.value)}
+                placeholder="#111111"
+                className="font-mono"
+              />
+              <input
+                type="color"
+                aria-label={t.settings.accent}
+                value={
+                  /^#([0-9a-fA-F]{6})$/.test(draft.accentColor || "")
+                    ? draft.accentColor
+                    : "#111111"
+                }
+                onChange={(e) => patch("accentColor", e.target.value)}
+                className="h-8 w-10 cursor-pointer rounded-md border border-input bg-transparent p-0.5"
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => patch("accentColor", "")}
+              >
+                {t.settings.accentReset}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {t.settings.accentHint}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="textScale">
+              {t.settings.textScale} · {draft.textScale?.toFixed?.(2) ?? "1.00"}
+            </Label>
+            <input
+              id="textScale"
+              type="range"
+              min={0.85}
+              max={1.25}
+              step={0.05}
+              value={draft.textScale ?? 1}
+              onChange={(e) => patch("textScale", Number(e.target.value))}
+              className="w-full accent-foreground"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {t.settings.textScaleHint}
             </p>
           </div>
           <div className="space-y-2">
@@ -488,6 +623,19 @@ export function SettingsPage() {
             <p className="text-[11px] text-muted-foreground">
               {t.settings.autoUpdateHoursHint}
             </p>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-xs">{t.settings.checkUpdateOnLaunch}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {t.settings.checkUpdateOnLaunchHint}
+              </p>
+            </div>
+            <Switch
+              checked={!!draft.checkUpdateOnLaunch}
+              onCheckedChange={(v) => patch("checkUpdateOnLaunch", v)}
+              aria-label={t.settings.checkUpdateOnLaunch}
+            />
           </div>
         </Card>
       </section>
@@ -730,8 +878,8 @@ export function SettingsPage() {
           <p className="text-[11px] text-muted-foreground">
             {t.settings.backupHint}
           </p>
-          <div className="pt-2">
-            <h3 className="mb-2 text-sm font-medium">{t.settings.about}</h3>
+          <div className="space-y-2 pt-2">
+            <h3 className="text-sm font-medium">{t.settings.about}</h3>
             <div className="grid gap-1 font-mono text-[11px] text-muted-foreground sm:grid-cols-2">
               <p>ClashNode {version?.app ?? "0.1.0"}</p>
               <p>mihomo {core?.version ?? "—"}</p>
@@ -741,9 +889,120 @@ export function SettingsPage() {
                 {version?.node ?? "—"}
               </p>
             </div>
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-muted-foreground"
+                disabled={updateBusy}
+                onClick={() => void checkUpdate()}
+              >
+                {t.settings.checkUpdate}
+              </Button>
+              {updateInfo?.htmlUrl ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() =>
+                    void window.open(updateInfo.htmlUrl!, "_blank")
+                  }
+                >
+                  {t.settings.updateOpen}
+                </Button>
+              ) : null}
+            </div>
+            {updateInfo ? (
+              <p className="text-[11px] text-muted-foreground">
+                {t.settings.updateCurrent}: {updateInfo.current}
+                {updateInfo.latest
+                  ? ` · ${t.settings.updateLatest}: ${updateInfo.latest}`
+                  : ""}
+                {updateInfo.hasUpdate
+                  ? ` · ${t.settings.updateAvailable}`
+                  : updateInfo.error
+                    ? ` · ${updateInfo.error}`
+                    : ` · ${t.settings.updateNone}`}
+              </p>
+            ) : null}
           </div>
         </Card>
       </section>
+
+      <Card className="space-y-3 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t.settings.webdav}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t.settings.webdavHint}
+          </p>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+          <p className="text-xs">{t.settings.webdavEnable}</p>
+          <Switch
+            checked={!!draft.webdav?.enabled}
+            onCheckedChange={(v) => patchWebdav("enabled", v)}
+            aria-label={t.settings.webdavEnable}
+          />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2 sm:col-span-2">
+            <Label>{t.settings.webdavUrl}</Label>
+            <Input
+              value={draft.webdav?.url ?? ""}
+              onChange={(e) => patchWebdav("url", e.target.value)}
+              placeholder="https://dav.example.com/remote.php/dav/files/user"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t.settings.webdavUser}</Label>
+            <Input
+              value={draft.webdav?.username ?? ""}
+              onChange={(e) => patchWebdav("username", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t.settings.webdavPass}</Label>
+            <Input
+              type="password"
+              value={draft.webdav?.password ?? ""}
+              onChange={(e) => patchWebdav("password", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label>{t.settings.webdavPath}</Label>
+            <Input
+              value={draft.webdav?.path ?? "/ClashNode"}
+              onChange={(e) => patchWebdav("path", e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => void webdavTest()}
+          >
+            {t.settings.webdavTest}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => void webdavUpload()}
+          >
+            {t.settings.webdavUpload}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => void webdavDownload()}
+          >
+            {t.settings.webdavDownload}
+          </Button>
+        </div>
+      </Card>
 
       <Card className="space-y-3 p-4 sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">

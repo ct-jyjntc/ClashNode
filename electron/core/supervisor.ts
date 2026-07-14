@@ -64,13 +64,24 @@ export class CoreSupervisor extends EventEmitter {
     this.emit("state", this.getState());
   }
 
-  writeRuntimeConfig(settings = loadSettings()) {
+  async writeRuntimeConfig(settings = loadSettings()) {
     ensureDir(getHomeDir());
     const profiles = loadProfilesState();
+    const current = profiles.currentId
+      ? profiles.items.find((p) => p.id === profiles.currentId)
+      : null;
     const yaml = profiles.currentId
       ? readProfileYaml(profiles.currentId)
       : null;
-    const { yaml: merged, warnings } = mergeConfig(yaml, settings, this.secret);
+    const { yaml: merged, warnings } = await mergeConfig(
+      yaml,
+      settings,
+      this.secret,
+      {
+        prependRules: current?.prependRules,
+        scriptId: current?.scriptId,
+      },
+    );
     const configPath = getConfigPath();
     fs.writeFileSync(configPath, merged, "utf8");
     if (warnings.length) {
@@ -78,7 +89,19 @@ export class CoreSupervisor extends EventEmitter {
         this.emit("log", { type: "warning", payload: `[config] ${w}` });
       }
     }
-    return { configPath, warnings };
+    return { configPath, warnings, selectedMap: current?.selectedMap ?? {} };
+  }
+
+  async applySelectedMap(selectedMap: Record<string, string>) {
+    if (!this.api || this.status !== "running") return;
+    for (const [group, name] of Object.entries(selectedMap)) {
+      if (!group || !name) continue;
+      try {
+        await this.api.selectProxy(group, name);
+      } catch {
+        /* group may not exist in this profile */
+      }
+    }
   }
 
   async start(options?: { forceRestart?: boolean }) {
@@ -107,7 +130,8 @@ export class CoreSupervisor extends EventEmitter {
 
     const settings = loadSettings();
     const home = getHomeDir();
-    const { configPath, warnings } = this.writeRuntimeConfig(settings);
+    const { configPath, warnings, selectedMap } =
+      await this.writeRuntimeConfig(settings);
 
     // validate
     try {
@@ -159,6 +183,9 @@ export class CoreSupervisor extends EventEmitter {
       this.version = await waitForApi(this.api);
       this.restartAttempts = 0;
       this.setStatus("running");
+      if (selectedMap && Object.keys(selectedMap).length) {
+        await this.applySelectedMap(selectedMap);
+      }
       return this.getState();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -221,10 +248,14 @@ export class CoreSupervisor extends EventEmitter {
 
   async reloadConfig() {
     const settings = loadSettings();
-    const { configPath } = this.writeRuntimeConfig(settings);
+    const { configPath, selectedMap } =
+      await this.writeRuntimeConfig(settings);
     if (this.status === "running" && this.api) {
       try {
         await this.api.putConfigs({ path: configPath }, true);
+        if (selectedMap && Object.keys(selectedMap).length) {
+          await this.applySelectedMap(selectedMap);
+        }
         return this.getState();
       } catch {
         return this.restart();
@@ -241,7 +272,7 @@ export class CoreSupervisor extends EventEmitter {
         settings.tun !== this.getState().tun);
 
     if (this.status === "running" && this.api && !needRestart) {
-      this.writeRuntimeConfig(settings);
+      await this.writeRuntimeConfig(settings);
       await this.api.patchConfigs({
         mode: settings.mode,
         "log-level": settings.logLevel,
@@ -257,7 +288,7 @@ export class CoreSupervisor extends EventEmitter {
     if (this.status === "running") {
       return this.restart();
     }
-    this.writeRuntimeConfig(settings);
+    await this.writeRuntimeConfig(settings);
     return this.getState();
   }
 

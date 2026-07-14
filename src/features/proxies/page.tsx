@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, Timer } from "lucide-react";
+import { Activity, RefreshCw, Timer } from "lucide-react";
 import { PageHeader } from "@/shared/components/page-header";
 import {
   ListPage,
@@ -13,11 +13,12 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAppStore } from "@/shared/hooks/use-app-state";
 import { getApi } from "@/shared/lib/api";
-import { cn, formatDelay } from "@/shared/lib/utils";
+import { cn, formatBytes, formatDate, formatDelay } from "@/shared/lib/utils";
 import { useI18n } from "@/shared/i18n";
-import type { ProxyNode } from "@/entities/mihomo/types";
+import type { ProviderInfo, ProxyNode } from "@/entities/mihomo/types";
 
 const GROUP_TYPES = new Set([
   "Selector",
@@ -30,24 +31,33 @@ const GROUP_TYPES = new Set([
 export function ProxiesPage() {
   const core = useAppStore((s) => s.core);
   const { t } = useI18n();
+  const [tab, setTab] = useState<"nodes" | "providers">("nodes");
   const [proxies, setProxies] = useState<Record<string, ProxyNode>>({});
+  const [providers, setProviders] = useState<Record<string, ProviderInfo>>({});
   const [activeGroup, setActiveGroup] = useState<string>("");
   const [query, setQuery] = useState("");
+  const [providerQuery, setProviderQuery] = useState("");
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [providerBusy, setProviderBusy] = useState<string | null>(null);
 
   const running = core?.status === "running";
 
   const load = useCallback(async () => {
     if (!running) {
       setProxies({});
+      setProviders({});
       return;
     }
     setLoading(true);
     try {
-      const res = await getApi().getProxies();
-      setProxies(res.proxies || {});
+      const [px, pv] = await Promise.all([
+        getApi().getProxies(),
+        getApi().getProviders(),
+      ]);
+      setProxies(px.proxies || {});
+      setProviders(pv.providers || {});
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -58,6 +68,15 @@ export function ProxiesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const providerList = useMemo(() => {
+    const items = Object.values(providers).filter(
+      (p) => p.vehicleType !== "Compatible",
+    );
+    const q = providerQuery.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((p) => p.name.toLowerCase().includes(q));
+  }, [providers, providerQuery]);
 
   const groups = useMemo(() => {
     return Object.values(proxies)
@@ -125,13 +144,51 @@ export function ProxiesPage() {
     );
   }
 
+  async function refreshProvider(name: string) {
+    setProviderBusy(name);
+    try {
+      await getApi().updateProvider(name);
+      await load();
+      toast.success(t.providers.refreshed);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProviderBusy(null);
+    }
+  }
+
+  async function healthProvider(name: string) {
+    setProviderBusy(`h:${name}`);
+    try {
+      await getApi().healthcheckProvider(name);
+      await load();
+      toast.success(t.providers.healthDone);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProviderBusy(null);
+    }
+  }
+
   return (
     <ListPage>
       <PageHeader
         title={t.proxies.title}
-        description={`${groups.length} ${t.proxies.groups}`}
+        description={
+          tab === "nodes"
+            ? `${groups.length} ${t.proxies.groups}`
+            : `${providerList.length} ${t.providers.count}`
+        }
         actions={
           <>
+            <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+              <TabsList>
+                <TabsTrigger value="nodes">{t.proxies.tabNodes}</TabsTrigger>
+                <TabsTrigger value="providers">
+                  {t.proxies.tabProviders}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
             <Button
               variant="secondary"
               size="sm"
@@ -142,22 +199,108 @@ export function ProxiesPage() {
               <RefreshCw className="size-3.5" strokeWidth={1.8} />
               {t.proxies.refresh}
             </Button>
-            <Button
-              size="sm"
-              onClick={() => void testAll()}
-              disabled={testing || !group}
-            >
-              <Timer className="size-3.5" strokeWidth={1.8} />
-              {testing ? t.proxies.testing : t.proxies.testGroup}
-            </Button>
+            {tab === "nodes" ? (
+              <Button
+                size="sm"
+                onClick={() => void testAll()}
+                disabled={testing || !group}
+              >
+                <Timer className="size-3.5" strokeWidth={1.8} />
+                {testing ? t.proxies.testing : t.proxies.testGroup}
+              </Button>
+            ) : null}
           </>
         }
       />
 
-      {/*
-        flex-1 basis-0 + grid-rows-1 so both columns stretch to the full
-        remaining page height (not content height).
-      */}
+      {tab === "providers" ? (
+        <div className="flex min-h-0 flex-1 basis-0 flex-col gap-6 overflow-hidden">
+          <Input
+            className="max-w-72 shrink-0"
+            placeholder={t.providers.filter}
+            value={providerQuery}
+            onChange={(e) => setProviderQuery(e.target.value)}
+          />
+          <Card className="flex min-h-0 flex-1 basis-0 flex-col overflow-hidden">
+            <div
+              className={cn(
+                TABLE_HEAD_CLASS,
+                "grid grid-cols-[1.2fr_0.7fr_0.7fr_0.8fr_0.6fr_72px]",
+              )}
+            >
+              <span>{t.providers.name}</span>
+              <span>{t.providers.type}</span>
+              <span>{t.providers.vehicle}</span>
+              <span>{t.providers.updated}</span>
+              <span>{t.providers.nodes}</span>
+              <span />
+            </div>
+            <div className="relative min-h-0 flex-1">
+              <ScrollArea className="absolute inset-0 h-full">
+                {providerList.map((p) => {
+                  const info = p.subscriptionInfo;
+                  const used = (info?.upload ?? 0) + (info?.download ?? 0);
+                  return (
+                    <div
+                      key={p.name}
+                      className={cn(
+                        TABLE_ROW_CLASS,
+                        "grid grid-cols-[1.2fr_0.7fr_0.7fr_0.8fr_0.6fr_72px]",
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate">{p.name}</p>
+                        {info?.total ? (
+                          <p className="truncate text-[11px] text-muted-foreground">
+                            {formatBytes(used)} / {formatBytes(info.total)}
+                          </p>
+                        ) : null}
+                      </div>
+                      <span className="truncate text-muted-foreground">
+                        {p.type}
+                      </span>
+                      <span className="truncate text-muted-foreground">
+                        {p.vehicleType}
+                      </span>
+                      <span className="truncate text-muted-foreground">
+                        {formatDate(p.updatedAt)}
+                      </span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {p.proxies?.length ?? 0}
+                      </span>
+                      <div className="flex items-center justify-end gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-6 text-muted-foreground"
+                          disabled={providerBusy === p.name}
+                          onClick={() => void refreshProvider(p.name)}
+                        >
+                          <RefreshCw className="size-3.5" strokeWidth={1.8} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-6 text-muted-foreground"
+                          disabled={providerBusy === `h:${p.name}`}
+                          onClick={() => void healthProvider(p.name)}
+                        >
+                          <Activity className="size-3.5" strokeWidth={1.8} />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {!providerList.length ? (
+                  <div className="flex min-h-32 items-center justify-center text-xs text-muted-foreground">
+                    {t.providers.empty}
+                  </div>
+                ) : null}
+              </ScrollArea>
+            </div>
+          </Card>
+        </div>
+      ) : (
       <div className="grid min-h-0 flex-1 basis-0 grid-rows-1 gap-3 lg:grid-cols-[220px_1fr]">
         <Card className="flex h-full min-h-0 flex-col overflow-hidden p-0">
           <div className="relative min-h-0 flex-1">
@@ -251,6 +394,7 @@ export function ProxiesPage() {
           </div>
         </Card>
       </div>
+      )}
     </ListPage>
   );
 }

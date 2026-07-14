@@ -1,5 +1,6 @@
 import type {
   ConnectionsSnapshot,
+  ProvidersResponse,
   ProxiesResponse,
   ProxyMode,
   RuleItem,
@@ -112,10 +113,7 @@ export class MihomoApi {
   }
 
   providers() {
-    return this.request<{ providers: Record<string, unknown> }>(
-      "GET",
-      "/providers/proxies",
-    );
+    return this.request<ProvidersResponse>("GET", "/providers/proxies");
   }
 
   updateProvider(name: string) {
@@ -125,6 +123,27 @@ export class MihomoApi {
       undefined,
       60000,
     );
+  }
+
+  healthcheckProvider(name: string) {
+    return this.request<void>(
+      "GET",
+      `/providers/proxies/${encodeURIComponent(name)}/healthcheck`,
+      undefined,
+      120000,
+    );
+  }
+
+  flushFakeIp() {
+    return this.request<void>("POST", "/cache/fakeip/flush");
+  }
+
+  flushDns() {
+    return this.request<void>("POST", "/cache/dns/flush");
+  }
+
+  upgradeGeo() {
+    return this.request<void>("POST", "/upgrade/geo", undefined, 120000);
   }
 
   setMode(mode: ProxyMode) {

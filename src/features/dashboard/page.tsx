@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  ClipboardCopy,
   Power,
   RefreshCw,
   Shield,
@@ -28,12 +29,20 @@ export function DashboardPage() {
   const setCore = useAppStore((s) => s.setCore);
   const setSettings = useAppStore((s) => s.setSettings);
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<{ up: number; down: number }[]>([]);
   const { t } = useI18n();
 
   const running = core?.status === "running";
   const currentProfile = profiles?.items.find(
     (p) => p.id === profiles.currentId,
   );
+
+  useEffect(() => {
+    setHistory((h) => {
+      const next = [...h, { up: traffic.up, down: traffic.down }];
+      return next.slice(-40);
+    });
+  }, [traffic.up, traffic.down]);
 
   async function toggleCore() {
     setBusy(true);
@@ -87,8 +96,19 @@ export function DashboardPage() {
     }
   }
 
+  async function copyEnv() {
+    try {
+      await getApi().copyProxyEnv();
+      toast.success(t.dashboard.envCopied);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const maxHist = Math.max(1, ...history.map((h) => h.up + h.down));
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <PageHeader
         title={t.dashboard.title}
         description={
@@ -98,6 +118,15 @@ export function DashboardPage() {
         }
         actions={
           <>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => void copyEnv()}
+            >
+              <ClipboardCopy className="size-3.5" strokeWidth={1.8} />
+              {t.dashboard.copyEnv}
+            </Button>
             <Button
               variant="secondary"
               size="sm"
@@ -237,6 +266,46 @@ export function DashboardPage() {
           </div>
         </Card>
       </section>
+
+      <Card className="p-4 sm:p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium">{t.dashboard.trafficHistory}</h2>
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            ↑ {formatSpeed(traffic.up)} · ↓ {formatSpeed(traffic.down)}
+          </span>
+        </div>
+        <div className="flex h-24 items-end gap-px">
+          {history.length
+            ? history.map((h, i) => {
+                const total = h.up + h.down;
+                const pct = Math.max(4, Math.round((total / maxHist) * 100));
+                const upPct =
+                  total > 0 ? Math.round((h.up / total) * pct) : 0;
+                return (
+                  <div
+                    key={i}
+                    className="flex min-w-0 flex-1 flex-col justify-end gap-px"
+                    style={{ height: "100%" }}
+                    title={`↑ ${formatSpeed(h.up)} ↓ ${formatSpeed(h.down)}`}
+                  >
+                    <div
+                      className="w-full rounded-sm bg-foreground/70"
+                      style={{ height: `${upPct}%` }}
+                    />
+                    <div
+                      className="w-full rounded-sm bg-foreground/25"
+                      style={{ height: `${Math.max(0, pct - upPct)}%` }}
+                    />
+                  </div>
+                );
+              })
+            : (
+              <div className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
+                —
+              </div>
+            )}
+        </div>
+      </Card>
 
       {core?.error ? (
         <Card className="p-4 text-xs text-destructive">{core.error}</Card>

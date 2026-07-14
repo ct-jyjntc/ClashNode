@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { create } from "zustand";
+import { toast } from "sonner";
 import { getApi, hasApi } from "@/shared/lib/api";
+import { applyUiChrome } from "@/shared/lib/theme-accent";
 import type {
   AppSettings,
   CoreState,
@@ -41,7 +43,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       api.getSettings(),
       api.getProfiles(),
     ]);
+    applyUiChrome({
+      accentColor: settings.accentColor,
+      textScale: settings.textScale,
+    });
     set({ core, settings, profiles, ready: true });
+
+    if (settings.checkUpdateOnLaunch) {
+      void api
+        .checkUpdate()
+        .then((r) => {
+          if (r.hasUpdate && r.latest) {
+            toast.message(`mihomo ${r.latest}`, {
+              description: r.htmlUrl || undefined,
+            });
+          }
+        })
+        .catch(() => undefined);
+    }
   },
   refreshCore: async () => {
     set({ core: await getApi().getCoreState() });
@@ -58,7 +77,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   setTraffic: (traffic) => set({ traffic }),
   setCore: (core) => set({ core }),
-  setSettings: (settings) => set({ settings }),
+  setSettings: (settings) => {
+    applyUiChrome({
+      accentColor: settings.accentColor,
+      textScale: settings.textScale,
+    });
+    set({ settings });
+  },
   setProfiles: (profiles) => set({ profiles }),
 }));
 

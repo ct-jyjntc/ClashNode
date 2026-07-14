@@ -1,5 +1,7 @@
 import yaml from "js-yaml";
 import type { AppSettings, DnsSettings } from "../shared/types";
+import { runConfigScript } from "./script-runner";
+import { readScriptContent } from "../store/scripts";
 
 const BUILTIN = new Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"]);
 
@@ -124,11 +126,12 @@ function buildDnsBlock(dns: DnsSettings): Record<string, unknown> {
   };
 }
 
-export function mergeConfig(
+export async function mergeConfig(
   profileYaml: string | null,
   settings: AppSettings,
   secret: string,
-): { yaml: string; warnings: string[] } {
+  options?: { prependRules?: string[]; scriptId?: string | null },
+): Promise<{ yaml: string; warnings: string[] }> {
   let base: Record<string, unknown> = { ...MINIMAL_BASE };
   if (profileYaml?.trim()) {
     try {
@@ -146,6 +149,19 @@ export function mergeConfig(
   delete base["external-ui"];
   delete base["external-ui-url"];
   delete base["external-ui-name"];
+
+  // Script overwrite runs on the raw profile map first (FlClash-style)
+  const warnings: string[] = [];
+  if (options?.scriptId) {
+    try {
+      const script = readScriptContent(options.scriptId);
+      base = await runConfigScript(script, base);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      warnings.push(`Script overwrite failed: ${msg}`);
+      throw new Error(`Script overwrite failed: ${msg}`);
+    }
+  }
 
   base["mixed-port"] = settings.mixedPort;
   base["allow-lan"] = settings.allowLan;
@@ -179,7 +195,6 @@ export function mergeConfig(
   if (settings.dns.overrideProfile || !hasProfileDns) {
     base.dns = buildDnsBlock(settings.dns);
   } else if (hasProfileDns && settings.dns.enable === false) {
-    // Soft-disable: keep profile DNS object but mark enable false
     const profileDns = base.dns as Record<string, unknown>;
     base.dns = { ...profileDns, enable: false };
   }
@@ -188,7 +203,19 @@ export function mergeConfig(
     base.rules = ["MATCH,DIRECT"];
   }
 
-  const warnings = sanitizeProxyGraph(base);
+  if (options?.prependRules?.length) {
+    const existing = Array.isArray(base.rules) ? (base.rules as unknown[]) : [];
+    base.rules = [...options.prependRules, ...existing];
+  }
+
+  const profileBlock =
+    (base.profile as Record<string, unknown> | undefined) ?? {};
+  base.profile = {
+    ...profileBlock,
+    "store-selected": false,
+  };
+
+  warnings.push(...sanitizeProxyGraph(base));
 
   const text = yaml.dump(base, {
     lineWidth: -1,

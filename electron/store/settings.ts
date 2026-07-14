@@ -2,9 +2,11 @@ import {
   DEFAULT_DNS,
   DEFAULT_HOTKEYS,
   DEFAULT_SETTINGS,
+  DEFAULT_WEBDAV,
   type AppSettings,
   type DnsSettings,
   type HotkeySettings,
+  type WebDavSettings,
 } from "../shared/types";
 import { getSettingsPath, readJsonFile, writeJsonFile } from "./paths";
 
@@ -39,6 +41,20 @@ function normalizeHotkeys(
   };
 }
 
+function normalizeWebDav(
+  raw: Partial<WebDavSettings> | undefined,
+): WebDavSettings {
+  return {
+    ...DEFAULT_WEBDAV,
+    ...(raw ?? {}),
+    enabled: !!(raw?.enabled ?? DEFAULT_WEBDAV.enabled),
+    url: raw?.url ?? "",
+    username: raw?.username ?? "",
+    password: raw?.password ?? "",
+    path: raw?.path || DEFAULT_WEBDAV.path,
+  };
+}
+
 export function loadSettings(): AppSettings {
   const raw = readJsonFile<Partial<AppSettings>>(getSettingsPath(), {});
   const merged: AppSettings = {
@@ -49,6 +65,14 @@ export function loadSettings(): AppSettings {
       : [...DEFAULT_SETTINGS.bypassDomains],
     dns: normalizeDns(raw.dns),
     hotkeys: normalizeHotkeys(raw.hotkeys),
+    webdav: normalizeWebDav(raw.webdav),
+    accentColor:
+      typeof raw.accentColor === "string" ? raw.accentColor : "",
+    textScale:
+      typeof raw.textScale === "number" && raw.textScale >= 0.85 && raw.textScale <= 1.25
+        ? raw.textScale
+        : 1,
+    checkUpdateOnLaunch: raw.checkUpdateOnLaunch !== false,
   };
   return merged;
 }
@@ -72,6 +96,9 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     hotkeys: patch.hotkeys
       ? normalizeHotkeys({ ...prev.hotkeys, ...patch.hotkeys })
       : prev.hotkeys,
+    webdav: patch.webdav
+      ? normalizeWebDav({ ...prev.webdav, ...patch.webdav })
+      : prev.webdav,
   };
   saveSettings(next);
   return next;

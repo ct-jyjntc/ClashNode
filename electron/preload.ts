@@ -3,11 +3,14 @@ import type {
   AppSettings,
   ConnectionsSnapshot,
   CoreState,
+  GeoResourceFile,
   LogLine,
   Profile,
   ProfilesState,
+  ProvidersResponse,
   ProxiesResponse,
   ProxyMode,
+  RequestItem,
   RuleItem,
   TrafficSnapshot,
 } from "./shared/types";
@@ -44,6 +47,54 @@ const api = {
     ipcRenderer.invoke("profiles:content", id),
   saveProfileContent: (id: string, content: string): Promise<Profile> =>
     ipcRenderer.invoke("profiles:save-content", { id, content }),
+  setPrependRules: (id: string, rules: string[]): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-prepend-rules", { id, rules }),
+  setProfileScript: (
+    id: string,
+    scriptId: string | null,
+  ): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-script", { id, scriptId }),
+  reorderProfiles: (ids: string[]): Promise<ProfilesState> =>
+    ipcRenderer.invoke("profiles:reorder", ids),
+  getMergedPreview: (id?: string): Promise<string> =>
+    ipcRenderer.invoke("profiles:merged-preview", id),
+  importClipboard: (): Promise<{
+    type: "url" | "file";
+    profile: Profile;
+  }> => ipcRenderer.invoke("profiles:import-clipboard"),
+  listScripts: (): Promise<
+    Array<{ id: string; name: string; createdAt: string; updatedAt: string }>
+  > => ipcRenderer.invoke("scripts:list"),
+  createScript: (
+    name?: string,
+  ): Promise<{ id: string; name: string; createdAt: string; updatedAt: string }> =>
+    ipcRenderer.invoke("scripts:create", name),
+  renameScript: (
+    id: string,
+    name: string,
+  ): Promise<{ id: string; name: string; createdAt: string; updatedAt: string }> =>
+    ipcRenderer.invoke("scripts:rename", { id, name }),
+  getScriptContent: (id: string): Promise<string> =>
+    ipcRenderer.invoke("scripts:content", id),
+  saveScriptContent: (
+    id: string,
+    content: string,
+  ): Promise<{ id: string; name: string; createdAt: string; updatedAt: string }> =>
+    ipcRenderer.invoke("scripts:save", { id, content }),
+  deleteScript: (
+    id: string,
+  ): Promise<{ items: Array<{ id: string; name: string }> }> =>
+    ipcRenderer.invoke("scripts:delete", id),
+  getDefaultScript: (): Promise<string> => ipcRenderer.invoke("scripts:default"),
+  checkUpdate: (): Promise<{
+    current: string;
+    latest: string | null;
+    htmlUrl: string | null;
+    hasUpdate: boolean;
+    checkedAt: string;
+    error?: string;
+  }> => ipcRenderer.invoke("app:check-update"),
+
   getRuntimeConfig: (): Promise<string> =>
     ipcRenderer.invoke("config:runtime"),
   saveRuntimeConfig: (content: string): Promise<void> =>
@@ -52,9 +103,8 @@ const api = {
   getProxies: (): Promise<ProxiesResponse> => ipcRenderer.invoke("api:proxies"),
   selectProxy: (group: string, name: string): Promise<void> =>
     ipcRenderer.invoke("api:select-proxy", { group, name }),
-  testDelay: (
-    name: string,
-  ): Promise<{ delay: number }> => ipcRenderer.invoke("api:delay", name),
+  testDelay: (name: string): Promise<{ delay: number }> =>
+    ipcRenderer.invoke("api:delay", name),
   getConnections: (): Promise<ConnectionsSnapshot> =>
     ipcRenderer.invoke("api:connections"),
   closeConnection: (id: string): Promise<void> =>
@@ -62,19 +112,40 @@ const api = {
   closeAllConnections: (): Promise<void> =>
     ipcRenderer.invoke("api:close-all-connections"),
   getRules: (): Promise<{ rules: RuleItem[] }> => ipcRenderer.invoke("api:rules"),
-  getProviders: (): Promise<{ providers: Record<string, unknown> }> =>
+  getProviders: (): Promise<ProvidersResponse> =>
     ipcRenderer.invoke("api:providers"),
   updateProvider: (name: string): Promise<void> =>
     ipcRenderer.invoke("api:update-provider", name),
+  healthcheckProvider: (name: string): Promise<void> =>
+    ipcRenderer.invoke("api:healthcheck-provider", name),
+  flushFakeIp: (): Promise<void> => ipcRenderer.invoke("api:flush-fakeip"),
+  flushDns: (): Promise<void> => ipcRenderer.invoke("api:flush-dns"),
+  upgradeGeo: (): Promise<void> => ipcRenderer.invoke("api:upgrade-geo"),
   setMode: (mode: ProxyMode): Promise<void> =>
     ipcRenderer.invoke("api:set-mode", mode),
   patchConfigs: (body: Record<string, unknown>): Promise<void> =>
     ipcRenderer.invoke("api:patch-configs", body),
 
+  getRequests: (): Promise<RequestItem[]> => ipcRenderer.invoke("requests:list"),
+  clearRequests: (): Promise<boolean> => ipcRenderer.invoke("requests:clear"),
+
+  listGeo: (): Promise<GeoResourceFile[]> => ipcRenderer.invoke("geo:list"),
+  downloadGeo: (name: string): Promise<GeoResourceFile> =>
+    ipcRenderer.invoke("geo:download", name),
+  downloadAllGeo: (): Promise<GeoResourceFile[]> =>
+    ipcRenderer.invoke("geo:download-all"),
+
+  webdavTest: (): Promise<{ ok: boolean; httpStatus: string }> =>
+    ipcRenderer.invoke("webdav:test"),
+  webdavUpload: (): Promise<string> => ipcRenderer.invoke("webdav:upload"),
+  webdavDownload: (): Promise<boolean> => ipcRenderer.invoke("webdav:download"),
+
   setSystemProxy: (enabled: boolean): Promise<AppSettings> =>
     ipcRenderer.invoke("system:proxy", enabled),
   authorizeTun: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("system:authorize-tun"),
+  copyProxyEnv: (): Promise<string> =>
+    ipcRenderer.invoke("system:copy-proxy-env"),
 
   createBackup: (): Promise<string | null> =>
     ipcRenderer.invoke("backup:create"),
@@ -124,6 +195,11 @@ const api = {
     const listener = (_: Electron.IpcRendererEvent, t: TrafficSnapshot) => cb(t);
     ipcRenderer.on("traffic:update", listener);
     return () => ipcRenderer.removeListener("traffic:update", listener);
+  },
+  onRequestItem: (cb: (item: RequestItem) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, item: RequestItem) => cb(item);
+    ipcRenderer.on("requests:item", listener);
+    return () => ipcRenderer.removeListener("requests:item", listener);
   },
 };
 

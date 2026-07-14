@@ -16,4 +16,11 @@ export type {
   DnsSettings,
   DnsEnhancedMode,
   HotkeySettings,
+  ProviderInfo,
+  ProvidersResponse,
+  RequestItem,
+  GeoResourceFile,
+  WebDavSettings,
 } from "../../../electron/shared/types";
+
+// Profile.scriptId is part of Profile type from shared types

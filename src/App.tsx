@@ -7,8 +7,12 @@ import { useAppBootstrap } from "@/shared/hooks/use-app-state";
 import { DashboardPage } from "@/features/dashboard/page";
 import { ProxiesPage } from "@/features/proxies/page";
 import { ProfilesPage } from "@/features/profiles/page";
+import { ProvidersPage } from "@/features/providers/page";
+import { RequestsPage } from "@/features/requests/page";
 import { ConnectionsPage } from "@/features/connections/page";
 import { RulesPage } from "@/features/rules/page";
+import { ResourcesPage } from "@/features/resources/page";
+import { ScriptsPage } from "@/features/scripts/page";
 import { LogsPage } from "@/features/logs/page";
 import { SettingsPage } from "@/features/settings/page";
 import { I18nProvider, useI18n } from "@/shared/i18n";
@@ -54,8 +58,12 @@ function Bootstrapped() {
         <Route index element={<DashboardPage />} />
         <Route path="proxies" element={<ProxiesPage />} />
         <Route path="profiles" element={<ProfilesPage />} />
+        <Route path="providers" element={<ProvidersPage />} />
+        <Route path="requests" element={<RequestsPage />} />
         <Route path="connections" element={<ConnectionsPage />} />
         <Route path="rules" element={<RulesPage />} />
+        <Route path="resources" element={<ResourcesPage />} />
+        <Route path="scripts" element={<ScriptsPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
