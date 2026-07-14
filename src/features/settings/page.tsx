@@ -4,6 +4,7 @@ import {
   Archive,
   ArchiveRestore,
   Copy,
+  Download,
   ExternalLink,
   FolderOpen,
   RotateCcw,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { PageHeader } from "@/shared/components/page-header";
+import { HotkeyRecorder } from "@/shared/components/hotkey-recorder";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,10 +26,13 @@ import { applyUiChrome } from "@/shared/lib/theme-accent";
 import { useI18n, type Locale } from "@/shared/i18n";
 import type {
   AppSettings,
+  DashboardWidgetId,
   DnsEnhancedMode,
   LogLevel,
   ProxyMode,
+  ThemePreset,
 } from "@/entities/mihomo/types";
+import { THEME_PRESETS } from "@/entities/mihomo/types";
 
 const DEFAULT_BYPASS = [
   "127.0.0.1",
@@ -150,6 +155,12 @@ export function SettingsPage() {
     error?: string;
   } | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [appUpdateVersion, setAppUpdateVersion] = useState<string | null>(null);
+  const [appUpdateDownloaded, setAppUpdateDownloaded] = useState(false);
+  const [appUpdateProgress, setAppUpdateProgress] = useState<number | null>(
+    null,
+  );
+  const [ssidText, setSsidText] = useState("");
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
 
@@ -160,11 +171,32 @@ export function SettingsPage() {
     setDefaultNsText(formatList(settings.dns?.defaultNameserver));
     setNameserverText(formatList(settings.dns?.nameserver));
     setFallbackText(formatList(settings.dns?.fallback));
+    setSsidText(formatList(settings.onDemand?.ssids));
     applyUiChrome({
       accentColor: settings.accentColor,
       textScale: settings.textScale,
     });
   }, [settings]);
+
+  useEffect(() => {
+    if (!hasApiSafe()) return;
+    const api = getApi();
+    const offs = [
+      api.onUpdaterAvailable?.((info) => {
+        setAppUpdateVersion(info.version);
+        toast.message(`${t.settings.updateAvailable}: ${info.version}`);
+      }),
+      api.onUpdaterProgress?.((p) => setAppUpdateProgress(p.percent)),
+      api.onUpdaterDownloaded?.((info) => {
+        setAppUpdateDownloaded(true);
+        setAppUpdateVersion(info.version);
+        toast.success(t.settings.appUpdateReady);
+      }),
+    ];
+    return () => {
+      for (const off of offs) off?.();
+    };
+  }, [t.settings.appUpdateReady, t.settings.updateAvailable]);
 
   useEffect(() => {
     void (async () => {
@@ -217,6 +249,62 @@ export function SettingsPage() {
     );
   }
 
+  function patchPorts<K extends keyof NonNullable<AppSettings["ports"]>>(
+    key: K,
+    value: NonNullable<AppSettings["ports"]>[K],
+  ) {
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            ports: { ...d.ports, [key]: value },
+          }
+        : d,
+    );
+  }
+
+  function patchOnDemand<K extends keyof NonNullable<AppSettings["onDemand"]>>(
+    key: K,
+    value: NonNullable<AppSettings["onDemand"]>[K],
+  ) {
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            onDemand: { ...d.onDemand, [key]: value },
+          }
+        : d,
+    );
+  }
+
+  function toggleWidget(id: DashboardWidgetId) {
+    setDraft((d) => {
+      if (!d) return d;
+      const cur = d.dashboard?.widgets ?? [];
+      const next = cur.includes(id)
+        ? cur.filter((x) => x !== id)
+        : [...cur, id];
+      return { ...d, dashboard: { widgets: next } };
+    });
+  }
+
+  function applyThemePreset(preset: ThemePreset) {
+    const meta = THEME_PRESETS[preset];
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            themePreset: preset,
+            accentColor: meta.accent,
+          }
+        : d,
+    );
+    applyUiChrome({
+      accentColor: meta.accent,
+      textScale: draft?.textScale,
+    });
+  }
+
   async function save() {
     if (!draft) return;
     setSaving(true);
@@ -236,6 +324,31 @@ export function SettingsPage() {
           toggleTun: draft.hotkeys.toggleTun.trim(),
           showWindow: draft.hotkeys.showWindow.trim(),
         },
+        ports: {
+          port: Number(draft.ports?.port) || 0,
+          socksPort: Number(draft.ports?.socksPort) || 0,
+          redirPort: Number(draft.ports?.redirPort) || 0,
+          tproxyPort: Number(draft.ports?.tproxyPort) || 0,
+        },
+        onDemand: {
+          enabled: !!draft.onDemand?.enabled,
+          ssids: parseList(ssidText),
+          pauseWhenOffline: draft.onDemand?.pauseWhenOffline !== false,
+        },
+        dashboard: {
+          widgets: draft.dashboard?.widgets?.length
+            ? draft.dashboard.widgets
+            : [
+                "status",
+                "upload",
+                "download",
+                "port",
+                "mode",
+                "network",
+                "traffic",
+              ],
+        },
+        themePreset: draft.themePreset || "mono",
         accentColor: (draft.accentColor || "").trim(),
         textScale: Math.min(
           1.25,
@@ -268,6 +381,51 @@ export function SettingsPage() {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setUpdateBusy(false);
+    }
+  }
+
+  async function checkAppUpdate() {
+    setUpdateBusy(true);
+    try {
+      const r = await getApi().checkAppUpdate();
+      if (!r.ok) toast.error(r.error || t.settings.updateNone);
+      else if (r.version) {
+        setAppUpdateVersion(r.version);
+        toast.success(`${t.settings.updateAvailable}: ${r.version}`);
+      } else toast.success(t.settings.updateNone);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function downloadUpdate() {
+    setUpdateBusy(true);
+    try {
+      const r = await getApi().downloadAppUpdate();
+      if (!r.ok) toast.error(r.error || "download failed");
+      else toast.success(t.settings.downloadUpdate);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function installUpdate() {
+    try {
+      await getApi().quitAndInstall();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function hasApiSafe() {
+    try {
+      return !!getApi();
+    } catch {
+      return false;
     }
   }
 
@@ -425,6 +583,32 @@ export function SettingsPage() {
             </p>
           </div>
           <div className="space-y-2">
+            <Label>{t.settings.themePreset}</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {(Object.keys(THEME_PRESETS) as ThemePreset[]).map((key) => (
+                <Button
+                  key={key}
+                  type="button"
+                  size="sm"
+                  variant={
+                    draft.themePreset === key ? "default" : "secondary"
+                  }
+                  className={
+                    draft.themePreset === key
+                      ? ""
+                      : "text-muted-foreground"
+                  }
+                  onClick={() => applyThemePreset(key)}
+                >
+                  {THEME_PRESETS[key].label}
+                </Button>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {t.settings.themePresetHint}
+            </p>
+          </div>
+          <div className="space-y-2">
             <Label htmlFor="accent">{t.settings.accent}</Label>
             <div className="flex gap-2">
               <Input
@@ -558,6 +742,69 @@ export function SettingsPage() {
             desc={t.settings.ipv6Hint}
             checked={!!draft.ipv6}
             onCheckedChange={(v) => patch("ipv6", v)}
+          />
+        </Card>
+      </section>
+
+      <section className="grid gap-2 lg:grid-cols-2">
+        <Card className="space-y-3 p-4 sm:p-5">
+          <div>
+            <h2 className="text-sm font-medium">{t.settings.ports}</h2>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t.settings.portsHint}
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(
+              [
+                ["port", t.settings.portHttp],
+                ["socksPort", t.settings.portSocks],
+                ["redirPort", t.settings.portRedir],
+                ["tproxyPort", t.settings.portTproxy],
+              ] as const
+            ).map(([key, label]) => (
+              <div key={key} className="space-y-2">
+                <Label htmlFor={`port-${key}`}>{label}</Label>
+                <Input
+                  id={`port-${key}`}
+                  type="number"
+                  min={0}
+                  value={draft.ports?.[key] ?? 0}
+                  onChange={(e) =>
+                    patchPorts(key, Math.max(0, Number(e.target.value) || 0))
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="space-y-3 p-4 sm:p-5">
+          <div>
+            <h2 className="text-sm font-medium">{t.settings.onDemand}</h2>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t.settings.onDemandHint}
+            </p>
+          </div>
+          <SwitchRow
+            title={t.settings.onDemandEnable}
+            desc={t.settings.onDemandHint}
+            checked={!!draft.onDemand?.enabled}
+            onCheckedChange={(v) => patchOnDemand("enabled", v)}
+          />
+          <SwitchRow
+            title={t.settings.onDemandPause}
+            desc={t.settings.onDemandPause}
+            checked={draft.onDemand?.pauseWhenOffline !== false}
+            onCheckedChange={(v) => patchOnDemand("pauseWhenOffline", v)}
+          />
+          <ListArea
+            id="onDemandSsids"
+            label={t.settings.onDemandSsids}
+            hint={t.settings.onDemandSsidsHint}
+            value={ssidText}
+            onChange={setSsidText}
+            rows={4}
           />
         </Card>
       </section>
@@ -725,25 +972,50 @@ export function SettingsPage() {
         ).map(([key, label]) => (
           <div key={key} className="space-y-2">
             <Label htmlFor={`hk-${key}`}>{label}</Label>
-            <div className="flex gap-2">
-              <Input
-                id={`hk-${key}`}
-                value={draft.hotkeys[key]}
-                onChange={(e) => patchHotkey(key, e.target.value)}
-                placeholder="CommandOrControl+Shift+…"
-                className="font-mono text-xs"
-              />
-              <Button
-                variant="secondary"
-                size="sm"
-                className="shrink-0 text-muted-foreground"
-                onClick={() => patchHotkey(key, "")}
-              >
-                {t.settings.hotkeyClear}
-              </Button>
-            </div>
+            <HotkeyRecorder
+              value={draft.hotkeys[key] || ""}
+              onChange={(v) => patchHotkey(key, v)}
+              clearLabel={t.settings.hotkeyClear}
+              recordingLabel={t.settings.hotkeyRecording}
+            />
           </div>
         ))}
+      </Card>
+
+      <Card className="space-y-3 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t.settings.dashboardLayout}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t.settings.dashboardLayoutHint}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(
+            [
+              "status",
+              "upload",
+              "download",
+              "port",
+              "mode",
+              "network",
+              "traffic",
+            ] as DashboardWidgetId[]
+          ).map((id) => {
+            const on = (draft.dashboard?.widgets ?? []).includes(id);
+            return (
+              <Button
+                key={id}
+                type="button"
+                size="sm"
+                variant={on ? "default" : "secondary"}
+                className={on ? "" : "text-muted-foreground"}
+                onClick={() => toggleWidget(id)}
+              >
+                {id}
+              </Button>
+            );
+          })}
+        </div>
       </Card>
 
       <section className="grid gap-2 lg:grid-cols-2">
@@ -899,6 +1171,36 @@ export function SettingsPage() {
               >
                 {t.settings.checkUpdate}
               </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-muted-foreground"
+                disabled={updateBusy}
+                onClick={() => void checkAppUpdate()}
+              >
+                {t.settings.checkAppUpdate}
+              </Button>
+              {appUpdateVersion ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="text-muted-foreground"
+                  disabled={updateBusy}
+                  onClick={() => void downloadUpdate()}
+                >
+                  <Download className="size-3.5" strokeWidth={1.8} />
+                  {t.settings.downloadUpdate}
+                </Button>
+              ) : null}
+              {appUpdateDownloaded ? (
+                <Button
+                  size="sm"
+                  disabled={updateBusy}
+                  onClick={() => void installUpdate()}
+                >
+                  {t.settings.installUpdate}
+                </Button>
+              ) : null}
               {updateInfo?.htmlUrl ? (
                 <Button
                   variant="ghost"
@@ -923,6 +1225,15 @@ export function SettingsPage() {
                   : updateInfo.error
                     ? ` · ${updateInfo.error}`
                     : ` · ${t.settings.updateNone}`}
+              </p>
+            ) : null}
+            {appUpdateVersion ? (
+              <p className="text-[11px] text-muted-foreground">
+                App {appUpdateVersion}
+                {appUpdateProgress != null
+                  ? ` · ${Math.round(appUpdateProgress)}%`
+                  : ""}
+                {appUpdateDownloaded ? ` · ${t.settings.appUpdateReady}` : ""}
               </p>
             ) : null}
           </div>

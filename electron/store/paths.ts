@@ -31,20 +31,78 @@ export function getSecretPath() {
   return path.join(getHomeDir(), "secret.txt");
 }
 
-export function getMihomoPath() {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "bin", "mihomo");
-  }
-  // Dev: prefer project-root resources next to package.json
-  const candidates = [
-    path.join(app.getAppPath(), "resources", "bin", "mihomo"),
-    path.join(process.cwd(), "resources", "bin", "mihomo"),
-    path.join(path.dirname(fileURLToPath(import.meta.url)), "../../resources/bin/mihomo"),
+function mihomoBinaryName() {
+  if (process.platform === "win32") return "mihomo.exe";
+  return "mihomo";
+}
+
+/** Prefer platform-tagged names when present (for multi-arch packs). */
+function mihomoCandidates(baseDir: string) {
+  const name = mihomoBinaryName();
+  const arch = process.arch; // arm64 | x64 | ...
+  const plat =
+    process.platform === "darwin"
+      ? "darwin"
+      : process.platform === "win32"
+        ? "windows"
+        : "linux";
+  return [
+    path.join(baseDir, name),
+    path.join(baseDir, `mihomo-${plat}-${arch}${process.platform === "win32" ? ".exe" : ""}`),
+    path.join(baseDir, `mihomo-${plat}-arm64`),
+    path.join(baseDir, `mihomo-${plat}-amd64`),
   ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+}
+
+function resolveBundledMihomoPath() {
+  if (app.isPackaged) {
+    const dir = path.join(process.resourcesPath, "bin");
+    for (const p of mihomoCandidates(dir)) {
+      if (fs.existsSync(p)) return p;
+    }
+    return path.join(dir, mihomoBinaryName());
   }
-  return candidates[0];
+  const bases = [
+    path.join(app.getAppPath(), "resources", "bin"),
+    path.join(process.cwd(), "resources", "bin"),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../../resources/bin"),
+  ];
+  for (const dir of bases) {
+    for (const p of mihomoCandidates(dir)) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return path.join(bases[0], mihomoBinaryName());
+}
+
+/**
+ * Runtime path for mihomo.
+ * When packaged, copy the bundled binary into userData/bin so TUN setuid
+ * (chown/chmod +sx) can succeed without mutating the .app bundle.
+ */
+export function getMihomoPath() {
+  const bundled = resolveBundledMihomoPath();
+  if (!app.isPackaged) return bundled;
+  if (!fs.existsSync(bundled)) return bundled;
+
+  const workDir = path.join(app.getPath("userData"), "bin");
+  ensureDir(workDir);
+  const work = path.join(workDir, mihomoBinaryName());
+
+  try {
+    if (fs.existsSync(work)) {
+      const st = fs.statSync(work);
+      // Keep an already-elevated setuid binary
+      if ((st.mode & 0o4000) !== 0) return work;
+      const srcMtime = fs.statSync(bundled).mtimeMs;
+      if (srcMtime <= st.mtimeMs) return work;
+    }
+    fs.copyFileSync(bundled, work);
+    fs.chmodSync(work, 0o755);
+    return work;
+  } catch {
+    return bundled;
+  }
 }
 
 export function ensureDir(dir: string) {

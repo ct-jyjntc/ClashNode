@@ -1,0 +1,32 @@
+import { DEFAULT_BYPASS } from "../shared/types";
+import * as mac from "./proxy-mac";
+import * as win from "./proxy-win";
+import * as linux from "./proxy-linux";
+
+export async function enableSystemProxy(
+  port: number,
+  bypass: string[] = DEFAULT_BYPASS,
+) {
+  if (process.platform === "darwin") {
+    return mac.enableSystemProxy(port, bypass);
+  }
+  if (process.platform === "win32") {
+    return win.enableSystemProxy(port, bypass);
+  }
+  if (process.platform === "linux") {
+    return linux.enableSystemProxy(port, bypass);
+  }
+  throw new Error(`System proxy unsupported on ${process.platform}`);
+}
+
+export async function disableSystemProxy() {
+  if (process.platform === "darwin") {
+    return mac.disableSystemProxy();
+  }
+  if (process.platform === "win32") {
+    return win.disableSystemProxy();
+  }
+  if (process.platform === "linux") {
+    return linux.disableSystemProxy();
+  }
+}

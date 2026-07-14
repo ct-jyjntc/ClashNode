@@ -165,17 +165,25 @@ export class MihomoApi {
 
 export async function waitForApi(
   api: MihomoApi,
-  attempts = 40,
-  intervalMs = 150,
+  attempts = 60,
+  intervalMs = 40,
 ): Promise<string> {
   let last = "";
   for (let i = 0; i < attempts; i++) {
     try {
-      const v = await api.version();
+      // Short timeout so failed polls don't sit on 8s fetch abort
+      const v = await api.request<{ version: string }>(
+        "GET",
+        "/version",
+        undefined,
+        400,
+      );
       return v.version;
     } catch (e) {
       last = e instanceof Error ? e.message : String(e);
-      await new Promise((r) => setTimeout(r, intervalMs));
+      // Back off slightly after the first few spins
+      const wait = i < 8 ? intervalMs : Math.min(120, intervalMs + i * 4);
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
   throw new Error(`mihomo API not ready: ${last}`);

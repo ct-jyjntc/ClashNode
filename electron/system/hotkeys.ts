@@ -1,7 +1,7 @@
 import { BrowserWindow, globalShortcut } from "electron";
 import type { CoreSupervisor } from "../core/supervisor";
 import { loadSettings, updateSettings } from "../store/settings";
-import { disableSystemProxy, enableSystemProxy } from "./proxy-mac";
+import { disableSystemProxy, enableSystemProxy } from "./proxy";
 import type { HotkeySettings } from "../shared/types";
 
 type HotkeyHandlers = {
@@ -56,13 +56,16 @@ async function toggleCore() {
   try {
     if (supervisor.getState().status === "running") {
       await supervisor.stop();
-      await disableSystemProxy();
+      void disableSystemProxy().catch(() => undefined);
       stopTraffic();
     } else {
       await supervisor.start();
       const settings = loadSettings();
       if (settings.systemProxy) {
-        await enableSystemProxy(settings.mixedPort, settings.bypassDomains);
+        void enableSystemProxy(
+          settings.mixedPort,
+          settings.bypassDomains,
+        ).catch(() => undefined);
       }
       startTraffic();
     }
@@ -82,13 +85,16 @@ async function toggleSystemProxy() {
   try {
     const prev = loadSettings();
     const next = updateSettings({ systemProxy: !prev.systemProxy });
+    // Optimistic UI first (FlClash)
+    handlers.getMainWindow()?.webContents.send("settings:changed", next);
     const running = handlers.supervisor.getState().status === "running";
     if (running && next.systemProxy) {
-      await enableSystemProxy(next.mixedPort, next.bypassDomains);
+      void enableSystemProxy(next.mixedPort, next.bypassDomains).catch(
+        () => undefined,
+      );
     } else {
-      await disableSystemProxy();
+      void disableSystemProxy().catch(() => undefined);
     }
-    handlers.getMainWindow()?.webContents.send("settings:changed", next);
   } catch (e) {
     handlers.getMainWindow()?.webContents.send("core:log", {
       type: "error",

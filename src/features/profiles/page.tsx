@@ -1,15 +1,18 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  Camera,
   ClipboardPaste,
   Code2,
   Eye,
   FileCode2,
   FileUp,
   GripVertical,
+  Layers,
   Link2,
   ListTree,
   Pencil,
+  Plus,
   QrCode,
   RefreshCw,
   Star,
@@ -33,9 +36,13 @@ import {
 import { useAppStore } from "@/shared/hooks/use-app-state";
 import { getApi } from "@/shared/lib/api";
 import { cn, formatBytes, formatDate } from "@/shared/lib/utils";
-import { decodeQrFromFile, extractSubscriptionUrl } from "@/shared/lib/qr";
+import {
+  decodeQrFromFile,
+  decodeQrFromVideo,
+  extractSubscriptionUrl,
+} from "@/shared/lib/qr";
 import { useI18n } from "@/shared/i18n";
-import type { Profile } from "@/entities/mihomo/types";
+import type { CustomProxyGroup, Profile } from "@/entities/mihomo/types";
 
 export function ProfilesPage() {
   const profiles = useAppStore((s) => s.profiles);
@@ -80,6 +87,18 @@ export function ProfilesPage() {
     Array<{ id: string; name: string }>
   >([]);
   const [scriptBusy, setScriptBusy] = useState(false);
+
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [groupsId, setGroupsId] = useState<string | null>(null);
+  const [groupsName, setGroupsName] = useState("");
+  const [groups, setGroups] = useState<CustomProxyGroup[]>([]);
+  const [groupsBusy, setGroupsBusy] = useState(false);
+
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraBusy, setCameraBusy] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const scanTimerRef = useRef<number | null>(null);
 
   async function addUrl() {
     if (!url.trim()) return;
@@ -133,6 +152,69 @@ export function ProfilesPage() {
     }
   }
 
+  function stopCamera() {
+    if (scanTimerRef.current != null) {
+      window.clearInterval(scanTimerRef.current);
+      scanTimerRef.current = null;
+    }
+    if (streamRef.current) {
+      for (const track of streamRef.current.getTracks()) track.stop();
+      streamRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
+  async function startCamera() {
+    setCameraBusy(true);
+    try {
+      stopCamera();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      scanTimerRef.current = window.setInterval(() => {
+        void (async () => {
+          if (!videoRef.current) return;
+          const raw = decodeQrFromVideo(videoRef.current);
+          if (!raw) return;
+          const url = extractSubscriptionUrl(raw);
+          if (!url) return;
+          stopCamera();
+          setCameraOpen(false);
+          try {
+            await getApi().addProfileUrl(url);
+            await refreshProfiles();
+            toast.success(t.profiles.qrImported);
+          } catch (e) {
+            toast.error(e instanceof Error ? e.message : String(e));
+          }
+        })();
+      }, 450);
+    } catch (e) {
+      toast.error(
+        e instanceof Error ? e.message : t.profiles.cameraDenied,
+      );
+      setCameraOpen(false);
+    } finally {
+      setCameraBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!cameraOpen) {
+      stopCamera();
+      return;
+    }
+    void startCamera();
+    return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraOpen]);
+
   async function openPreview(p: Profile) {
     try {
       const text = await getApi().getMergedPreview(p.id);
@@ -164,7 +246,11 @@ export function ProfilesPage() {
   function openRules(p: Profile) {
     setRulesId(p.id);
     setRulesName(p.name);
-    setRulesText((p.prependRules ?? []).join("\n"));
+    setRulesText(
+      (p.customRules?.length ? p.customRules : p.prependRules ?? []).join(
+        "\n",
+      ),
+    );
     setRulesOpen(true);
   }
 
@@ -176,7 +262,7 @@ export function ProfilesPage() {
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean);
-      await getApi().setPrependRules(rulesId, rules);
+      await getApi().setCustomRules(rulesId, rules);
       await refreshProfiles();
       setRulesOpen(false);
       toast.success(t.profiles.overwriteSaved);
@@ -184,6 +270,54 @@ export function ProfilesPage() {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setRulesBusy(false);
+    }
+  }
+
+  function openGroups(p: Profile) {
+    setGroupsId(p.id);
+    setGroupsName(p.name);
+    setGroups(
+      (p.customProxyGroups ?? []).map((g) => ({
+        name: g.name,
+        type: g.type,
+        proxies: [...(g.proxies ?? [])],
+        url: g.url,
+        interval: g.interval,
+      })),
+    );
+    setGroupsOpen(true);
+  }
+
+  function addEmptyGroup() {
+    setGroups((gs) => [
+      ...gs,
+      { name: "", type: "select", proxies: ["DIRECT"] },
+    ]);
+  }
+
+  async function saveGroups() {
+    if (!groupsId) return;
+    setGroupsBusy(true);
+    try {
+      const cleaned = groups
+        .map((g) => ({
+          name: g.name.trim(),
+          type: g.type || "select",
+          proxies: (g.proxies ?? [])
+            .map((x) => x.trim())
+            .filter(Boolean),
+          url: g.url,
+          interval: g.interval,
+        }))
+        .filter((g) => g.name);
+      await getApi().setCustomProxyGroups(groupsId, cleaned);
+      await refreshProfiles();
+      setGroupsOpen(false);
+      toast.success(t.profiles.customGroupsSaved);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGroupsBusy(false);
     }
   }
 
@@ -344,6 +478,15 @@ export function ProfilesPage() {
               variant="secondary"
               size="sm"
               className="text-muted-foreground"
+              onClick={() => setCameraOpen(true)}
+            >
+              <Camera className="size-3.5" strokeWidth={1.8} />
+              {t.profiles.importCamera}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
               onClick={() => void importClipboard()}
             >
               <ClipboardPaste className="size-3.5" strokeWidth={1.8} />
@@ -401,9 +544,15 @@ export function ProfilesPage() {
                   {p.type === "url" && p.autoUpdate ? (
                     <Badge variant="outline">{t.profiles.autoUpdate}</Badge>
                   ) : null}
-                  {p.prependRules?.length ? (
+                  {(p.customRules?.length || p.prependRules?.length) ? (
                     <Badge variant="secondary">
-                      {t.profiles.overwriteRules} · {p.prependRules.length}
+                      {t.profiles.overwriteRules} ·{" "}
+                      {(p.customRules ?? p.prependRules)?.length}
+                    </Badge>
+                  ) : null}
+                  {p.customProxyGroups?.length ? (
+                    <Badge variant="secondary">
+                      {t.profiles.customGroups} · {p.customProxyGroups.length}
                     </Badge>
                   ) : null}
                   {p.scriptId ? (
@@ -463,6 +612,16 @@ export function ProfilesPage() {
                   title={t.profiles.overwriteRules}
                 >
                   <ListTree className="size-3.5" strokeWidth={1.8} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  onClick={() => openGroups(p)}
+                  aria-label={t.profiles.customGroups}
+                  title={t.profiles.customGroups}
+                >
+                  <Layers className="size-3.5" strokeWidth={1.8} />
                 </Button>
                 <Button
                   variant="ghost"
@@ -765,6 +924,190 @@ export function ProfilesPage() {
               onClick={() => void saveRules()}
             >
               {rulesBusy ? t.profiles.saving : t.profiles.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom proxy groups */}
+      <Dialog
+        open={groupsOpen}
+        onOpenChange={(open) => {
+          setGroupsOpen(open);
+          if (!open) {
+            setGroupsId(null);
+            setGroups([]);
+          }
+        }}
+      >
+        <DialogContent className="max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t.profiles.customGroups}
+              {groupsName ? ` · ${groupsName}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {t.profiles.customGroupsHint}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[min(55vh,420px)] space-y-3 overflow-y-auto pr-1">
+            {groups.map((g, i) => (
+              <div
+                key={i}
+                className="space-y-2 rounded-md border border-border/60 bg-secondary/40 p-3"
+              >
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t.profiles.groupName}</Label>
+                    <Input
+                      value={g.name}
+                      onChange={(e) =>
+                        setGroups((gs) =>
+                          gs.map((x, j) =>
+                            j === i ? { ...x, name: e.target.value } : x,
+                          ),
+                        )
+                      }
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t.profiles.groupType}</Label>
+                    <select
+                      value={g.type}
+                      onChange={(e) =>
+                        setGroups((gs) =>
+                          gs.map((x, j) =>
+                            j === i
+                              ? {
+                                  ...x,
+                                  type: e.target
+                                    .value as CustomProxyGroup["type"],
+                                }
+                              : x,
+                          ),
+                        )
+                      }
+                      className="flex h-8 w-full rounded-md border border-input bg-secondary/55 px-2 text-xs"
+                    >
+                      <option value="select">select</option>
+                      <option value="url-test">url-test</option>
+                      <option value="fallback">fallback</option>
+                      <option value="load-balance">load-balance</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() =>
+                        setGroups((gs) => gs.filter((_, j) => j !== i))
+                      }
+                    >
+                      <Trash2 className="size-3.5" strokeWidth={1.8} />
+                      {t.profiles.groupRemove}
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">
+                    {t.profiles.groupProxies}
+                  </Label>
+                  <Input
+                    value={(g.proxies ?? []).join(", ")}
+                    onChange={(e) =>
+                      setGroups((gs) =>
+                        gs.map((x, j) =>
+                          j === i
+                            ? {
+                                ...x,
+                                proxies: e.target.value
+                                  .split(/[,，\n]+/)
+                                  .map((s) => s.trim())
+                                  .filter(Boolean),
+                              }
+                            : x,
+                        ),
+                      )
+                    }
+                    className="h-8 font-mono text-xs"
+                    placeholder="DIRECT, REJECT, node-a"
+                  />
+                </div>
+              </div>
+            ))}
+            {!groups.length ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">
+                —
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter className="sm:justify-between">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={addEmptyGroup}
+            >
+              <Plus className="size-3.5" strokeWidth={1.8} />
+              {t.profiles.groupAdd}
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setGroupsOpen(false)}
+              >
+                {t.profiles.cancel}
+              </Button>
+              <Button
+                size="sm"
+                disabled={groupsBusy}
+                onClick={() => void saveGroups()}
+              >
+                {groupsBusy ? t.profiles.saving : t.profiles.save}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Camera QR */}
+      <Dialog
+        open={cameraOpen}
+        onOpenChange={(open) => {
+          setCameraOpen(open);
+          if (!open) stopCamera();
+        }}
+      >
+        <DialogContent className="max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>{t.profiles.cameraTitle}</DialogTitle>
+            <DialogDescription>{t.profiles.cameraHint}</DialogDescription>
+          </DialogHeader>
+          <div className="overflow-hidden rounded-md border border-border/60 bg-black">
+            <video
+              ref={videoRef}
+              muted
+              playsInline
+              className="aspect-video w-full object-cover"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setCameraOpen(false)}
+            >
+              {t.profiles.cameraStop}
+            </Button>
+            <Button
+              size="sm"
+              disabled={cameraBusy}
+              onClick={() => void startCamera()}
+            >
+              {t.profiles.cameraStart}
             </Button>
           </DialogFooter>
         </DialogContent>

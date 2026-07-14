@@ -1,50 +1,66 @@
 # ClashNode
 
-Quiet macOS proxy client powered by **mihomo** (Clash Meta), with a monochrome Quiet Console UI.
+Quiet multi-platform proxy client powered by **mihomo** (Clash Meta), with a monochrome Quiet Console UI.
 
 ## Features
 
 - Start / stop / restart mihomo core
-- Profile import (subscription URL or local YAML)
-- Proxy groups, node selection, delay test
-- Live traffic, connections, rules, logs
-- System proxy (macOS `networksetup`)
-- Optional TUN (requires elevating the mihomo binary)
-- Tray menu, dark/light theme, backup / restore
-- External controller API: `127.0.0.1:9090` + local secret
+- Profiles: subscription URL, local YAML, clipboard, QR image, camera QR
+- Visual overwrite: prepend rules, custom proxy-groups, JS `main(config)` scripts
+- Proxy groups, node selection, delay test, providers
+- Dashboard with customizable widgets + live traffic chart
+- Connections, requests, rules, logs, geo resources
+- System proxy: macOS / Windows / Linux (GNOME)
+- Optional TUN (setuid elevation on macOS; see `docs/TUN-NETWORK-EXTENSION.md`)
+- Ports (mixed / HTTP / SOCKS / redir / tproxy), DNS, on-demand SSID
+- Global hotkeys (press-to-record), theme presets, WebDAV backup
+- Tray menu, in-app updater hooks (`electron-updater`)
+- External controller: `127.0.0.1:9090` + local secret
 
 ## Requirements
 
-- macOS arm64
 - Node.js 20+
-- mihomo binary at `resources/bin/mihomo` (bundled from `mihomo-darwin-arm64-v1.19.28`)
+- Platform-matched mihomo binary under `resources/bin/`:
+  - macOS arm64: `mihomo` or `mihomo-darwin-arm64`
+  - Windows / Linux: place the matching release binary with platform tag
 
 ## Develop
 
 ```bash
-cd /Users/luna/Desktop/ClashNode
+cd ClashNode
 npm install
 npm run dev
 ```
 
-## Build
+## Build / package
 
 ```bash
 npm run build
-npm run pack   # electron-builder dir
-# or
-npm run dist   # dmg + zip
+npm run pack:mac    # dir
+npm run pack:win
+npm run pack:linux
+npm run dist:mac    # dmg + zip
+npm run dist:win    # nsis + zip
+npm run dist:linux  # AppImage + deb
 ```
+
+Set GitHub `publish` in `package.json` for auto-update releases.
 
 ## Data directory
 
+| OS | Path |
+|----|------|
+| macOS | `~/Library/Application Support/clashnode/` |
+| Windows | `%APPDATA%/clashnode/` |
+| Linux | `~/.config/clashnode/` |
+
 ```
-~/Library/Application Support/clashnode/
-  config.yaml
-  profiles.json
-  profiles/*.yaml
-  settings.json
-  secret.txt
+config.yaml
+profiles.json
+profiles/*.yaml
+scripts/*.js
+settings.json
+secret.txt
 ```
 
 ## Defaults
@@ -59,7 +75,7 @@ npm run dist   # dmg + zip
 
 ## Reference
 
-UI aesthetic: Quiet Console (Grok2API-style admin). Feature flow inspired by [FlClash](https://github.com/chen08209/FlClash). Kernel: [mihomo](https://github.com/MetaCubeX/mihomo).
+UI: Quiet Console. Feature flow inspired by [FlClash](https://github.com/chen08209/FlClash). Kernel: [mihomo](https://github.com/MetaCubeX/mihomo).
 
 ## License
 

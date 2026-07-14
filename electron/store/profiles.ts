@@ -293,6 +293,29 @@ export function setProfileScript(profileId: string, scriptId: string | null) {
   return p;
 }
 
+export function setCustomProxyGroups(
+  profileId: string,
+  groups: NonNullable<Profile["customProxyGroups"]>,
+) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.customProxyGroups = groups;
+  saveProfilesState(state);
+  return p;
+}
+
+export function setCustomRules(profileId: string, rules: string[]) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.customRules = rules.map((r) => r.trim()).filter(Boolean);
+  // keep prependRules in sync for older UI paths
+  p.prependRules = p.customRules;
+  saveProfilesState(state);
+  return p;
+}
+
 export function reorderProfiles(ids: string[]) {
   const state = loadProfilesState();
   const map = new Map(state.items.map((p) => [p.id, p]));

@@ -21,6 +21,18 @@ export type {
   RequestItem,
   GeoResourceFile,
   WebDavSettings,
+  CustomProxyGroup,
+  PortSettings,
+  OnDemandSettings,
+  DashboardLayout,
+  DashboardWidgetId,
+  ThemePreset,
+  UpdateCheckResult,
 } from "../../../electron/shared/types";
 
-// Profile.scriptId is part of Profile type from shared types
+export {
+  THEME_PRESETS,
+  DEFAULT_PORTS,
+  DEFAULT_ON_DEMAND,
+  DEFAULT_DASHBOARD,
+} from "../../../electron/shared/types";

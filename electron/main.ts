@@ -25,6 +25,8 @@ import {
   saveProfileContent,
   setCurrentProfile,
   saveProfilesState,
+  setCustomProxyGroups,
+  setCustomRules,
   setPrependRules,
   setProfileScript,
   setSelectedProxy,
@@ -54,11 +56,22 @@ import {
   webdavTest,
   webdavUploadBackup,
 } from "./store/webdav";
-import { disableSystemProxy, enableSystemProxy } from "./system/proxy-mac";
+import { disableSystemProxy, enableSystemProxy } from "./system/proxy";
 import { destroyTray, setTrayTraffic, setupTray } from "./system/tray";
 import { registerHotkeys, unregisterHotkeys } from "./system/hotkeys";
+import {
+  startOnDemandMonitor,
+  stopOnDemandMonitor,
+} from "./system/connectivity";
+import {
+  checkForAppUpdates,
+  downloadAppUpdate,
+  quitAndInstallUpdate,
+  setupAutoUpdater,
+} from "./system/updater";
 import type {
   AppSettings,
+  CustomProxyGroup,
   ProxyMode,
   RequestItem,
   TrafficSnapshot,
@@ -284,12 +297,25 @@ function stopTrafficPoll() {
   }
 }
 
+/** Apply system proxy; never throws (logged via core:log). */
 async function syncSystemProxy(settings: AppSettings, running: boolean) {
-  if (running && settings.systemProxy) {
-    await enableSystemProxy(settings.mixedPort, settings.bypassDomains);
-  } else {
-    await disableSystemProxy();
+  try {
+    if (running && settings.systemProxy) {
+      await enableSystemProxy(settings.mixedPort, settings.bypassDomains);
+    } else {
+      await disableSystemProxy();
+    }
+  } catch (e) {
+    mainWindow?.webContents.send("core:log", {
+      type: "warning",
+      payload: `[proxy] ${e instanceof Error ? e.message : String(e)}`,
+    });
   }
+}
+
+/** Fire-and-forget system proxy so IPC returns immediately (FlClash style). */
+function syncSystemProxyBackground(settings: AppSettings, running: boolean) {
+  void syncSystemProxy(settings, running);
 }
 
 function applyHotkeysFromSettings(settings = loadSettings()) {
@@ -372,23 +398,32 @@ function scheduleProfileUpdates() {
 function registerIpc() {
   ipcMain.handle("core:state", () => supervisor.getState());
   ipcMain.handle("core:start", async () => {
+    // Emit starting early so UI flips without waiting for mihomo ready
+    broadcastState();
     const state = await supervisor.start();
     const settings = loadSettings();
-    await syncSystemProxy(settings, state.status === "running");
+    // Don't block start IPC on networksetup (biggest latency source)
+    syncSystemProxyBackground(settings, state.status === "running");
     startTrafficPoll();
+    broadcastState();
     return state;
   });
   ipcMain.handle("core:stop", async () => {
+    broadcastState();
     const state = await supervisor.stop();
-    await disableSystemProxy();
+    // Disable proxy in background; UI already sees stopped via state event
+    void disableSystemProxy().catch(() => undefined);
     stopTrafficPoll();
+    broadcastState();
     return state;
   });
   ipcMain.handle("core:restart", async () => {
+    broadcastState();
     const state = await supervisor.restart();
     const settings = loadSettings();
-    await syncSystemProxy(settings, state.status === "running");
+    syncSystemProxyBackground(settings, state.status === "running");
     startTrafficPoll();
+    broadcastState();
     return state;
   });
   ipcMain.handle("core:reload", async () => supervisor.reloadConfig());
@@ -407,12 +442,21 @@ function registerIpc() {
       applyHotkeysFromSettings(next);
     }
 
+    if (patch.onDemand != null) {
+      startOnDemandMonitor(supervisor, (msg) => {
+        mainWindow?.webContents.send("core:log", {
+          type: "info",
+          payload: msg,
+        });
+      });
+    }
+
     if (
       patch.systemProxy != null ||
       patch.mixedPort != null ||
       patch.bypassDomains != null
     ) {
-      await syncSystemProxy(next, running);
+      syncSystemProxyBackground(next, running);
     }
 
     const needsCorePatch =
@@ -424,23 +468,47 @@ function registerIpc() {
       patch.ipv6 != null ||
       patch.externalController != null;
 
-    const needsDnsReload = patch.dns != null;
+    const needsFullReload =
+      patch.dns != null ||
+      patch.ports != null;
 
-    if (needsCorePatch || needsDnsReload) {
-      if (patch.tun && !prev.tun) {
+    if (needsCorePatch || needsFullReload) {
+      // FlClash flow for TUN:
+      // 1) authorizeCore (setuid on binary) if enabling
+      // 2) restartCore so the new process runs with euid=0
+      // 3) then apply config with tun.enable
+      // Hot-patching TUN on an already-running non-root process → EPERM.
+      if (patch.tun === true && !prev.tun) {
         const auth = await supervisor.authorizeTunBinary();
         if (!auth.ok) {
           const rolled = updateSettings({ tun: false });
           mainWindow?.webContents.send("settings:changed", rolled);
           throw new Error(auth.message);
         }
-      }
-      if (needsDnsReload && running) {
-        // DNS lives in full config YAML — rewrite + reload
+        if (running) {
+          await supervisor.writeRuntimeConfig(next);
+          await supervisor.restart();
+          startTrafficPoll();
+          broadcastState();
+        } else {
+          await supervisor.writeRuntimeConfig(next);
+        }
+      } else if (patch.tun === false && prev.tun) {
+        // Disable TUN: restart with tun off (clean teardown of utun)
+        if (running) {
+          await supervisor.writeRuntimeConfig(next);
+          await supervisor.restart();
+          startTrafficPoll();
+          broadcastState();
+        } else {
+          await supervisor.writeRuntimeConfig(next);
+        }
+      } else if (needsFullReload && running) {
+        // DNS / classic ports live in full config YAML — rewrite + reload
         await supervisor.reloadConfig();
       } else if (needsCorePatch) {
         await supervisor.applySettings(next);
-      } else if (needsDnsReload) {
+      } else if (needsFullReload) {
         await supervisor.writeRuntimeConfig(next);
       }
     }
@@ -642,9 +710,14 @@ function registerIpc() {
     }
     const profile = st.items.find((p) => p.id === pid);
     const yaml = readProfileYaml(pid);
+    const prepend =
+      profile?.customRules?.length
+        ? profile.customRules
+        : profile?.prependRules;
     const { yaml: text } = await mergeConfig(yaml, settings, secret, {
-      prependRules: profile?.prependRules,
+      prependRules: prepend,
       scriptId: profile?.scriptId,
+      customProxyGroups: profile?.customProxyGroups,
     });
     return text;
   });
@@ -656,6 +729,41 @@ function registerIpc() {
       if (st.currentId === id) {
         if (supervisor.getState().status === "running") {
           await supervisor.reloadConfig();
+        } else {
+          await supervisor.writeRuntimeConfig();
+        }
+      }
+      return next;
+    },
+  );
+  ipcMain.handle(
+    "profiles:set-custom-groups",
+    async (
+      _e,
+      { id, groups }: { id: string; groups: CustomProxyGroup[] },
+    ) => {
+      const next = setCustomProxyGroups(id, groups);
+      const st = loadProfilesState();
+      if (st.currentId === id) {
+        if (supervisor.getState().status === "running") {
+          await supervisor.reloadConfig();
+          if (next.selectedMap) await supervisor.applySelectedMap(next.selectedMap);
+        } else {
+          await supervisor.writeRuntimeConfig();
+        }
+      }
+      return next;
+    },
+  );
+  ipcMain.handle(
+    "profiles:set-custom-rules",
+    async (_e, { id, rules }: { id: string; rules: string[] }) => {
+      const next = setCustomRules(id, rules);
+      const st = loadProfilesState();
+      if (st.currentId === id) {
+        if (supervisor.getState().status === "running") {
+          await supervisor.reloadConfig();
+          if (next.selectedMap) await supervisor.applySelectedMap(next.selectedMap);
         } else {
           await supervisor.writeRuntimeConfig();
         }
@@ -729,9 +837,12 @@ function registerIpc() {
   });
 
   ipcMain.handle("system:proxy", async (_e, enabled: boolean) => {
+    // Optimistic: push settings first so Switch flips immediately (FlClash)
     const next = updateSettings({ systemProxy: enabled });
-    await syncSystemProxy(next, supervisor.getState().status === "running");
     mainWindow?.webContents.send("settings:changed", next);
+    const running = supervisor.getState().status === "running";
+    // Apply networksetup without blocking the IPC reply
+    syncSystemProxyBackground(next, running);
     return next;
   });
   ipcMain.handle("system:authorize-tun", () => supervisor.authorizeTunBinary());
@@ -795,6 +906,13 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle("app:check-app-update", () => checkForAppUpdates());
+  ipcMain.handle("app:download-update", () => downloadAppUpdate());
+  ipcMain.handle("app:quit-and-install", () => {
+    quitAndInstallUpdate();
+    return true;
+  });
+
   ipcMain.handle("backup:create", async () => {
     const res = await dialog.showSaveDialog({
       defaultPath: `clashnode-backup-${Date.now()}.zip`,
@@ -842,6 +960,7 @@ async function gracefulQuit() {
   if (isQuitting) return;
   isQuitting = true;
   stopTrafficPoll();
+  stopOnDemandMonitor();
   unregisterHotkeys();
   try {
     await supervisor.stop(true);
@@ -868,6 +987,7 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
   setupTray(supervisor, () => mainWindow, () => void gracefulQuit());
+  setupAutoUpdater(() => mainWindow);
 
   // cold-start deep link (macOS may pass via argv on some builds)
   const bootLink = process.argv.find(
@@ -884,6 +1004,12 @@ app.whenReady().then(async () => {
   applyLoginItem(settings.startOnLaunch);
   applyHotkeysFromSettings(settings);
   scheduleProfileUpdates();
+  startOnDemandMonitor(supervisor, (msg) => {
+    mainWindow?.webContents.send("core:log", {
+      type: "info",
+      payload: msg,
+    });
+  });
 
   try {
     await supervisor.writeRuntimeConfig();
@@ -891,7 +1017,7 @@ app.whenReady().then(async () => {
     /* ignore */
   }
 
-  if (settings.autoStartCore) {
+  if (settings.autoStartCore && !settings.onDemand?.enabled) {
     void (async () => {
       try {
         const state = await supervisor.start();
@@ -907,6 +1033,10 @@ app.whenReady().then(async () => {
         });
       }
     })();
+  }
+
+  if (settings.checkUpdateOnLaunch && app.isPackaged) {
+    void checkForAppUpdates();
   }
 
   app.on("activate", () => {

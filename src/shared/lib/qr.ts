@@ -16,6 +16,24 @@ export async function decodeQrFromFile(file: File): Promise<string | null> {
   return code?.data?.trim() || null;
 }
 
+/** Decode QR from a video frame (camera scan). */
+export function decodeQrFromVideo(
+  video: HTMLVideoElement,
+): string | null {
+  if (!video.videoWidth || !video.videoHeight) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const code = jsQR(imageData.data, imageData.width, imageData.height, {
+    inversionAttempts: "attemptBoth",
+  });
+  return code?.data?.trim() || null;
+}
+
 export function extractSubscriptionUrl(text: string): string | null {
   const t = text.trim();
   if (/^https?:\/\//i.test(t)) return t;

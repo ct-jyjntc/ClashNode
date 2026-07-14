@@ -2,15 +2,21 @@
   "name": "clashnode",
   "version": "0.1.0",
   "private": true,
-  "description": "A quiet macOS proxy client powered by mihomo",
+  "description": "A quiet multi-platform proxy client powered by mihomo",
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
-    "pack": "npm run build && electron-builder --mac --dir",
-    "dist": "npm run build && electron-builder --mac"
+    "pack": "npm run build && electron-builder --dir",
+    "pack:mac": "npm run build && electron-builder --mac --dir",
+    "pack:win": "npm run build && electron-builder --win --dir",
+    "pack:linux": "npm run build && electron-builder --linux --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux"
   },
   "build": {
     "appId": "com.clashnode.app",
@@ -31,13 +37,52 @@
         ]
       }
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "clashnode",
+        "repo": "clashnode",
+        "releaseType": "release"
+      }
+    ],
     "mac": {
       "category": "public.app-category.utilities",
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
-      "identity": null
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Scan subscription QR codes",
+        "NSLocalNetworkUsageDescription": "Connect to the local mihomo controller"
+      }
+    },
+    "dmg": {
+      "title": "ClashNode",
+      "writeUpdateInfo": false
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     }
   },
   "dependencies": {
@@ -54,6 +99,7 @@
     "@tanstack/react-query": "^5.81.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
     "js-yaml": "^4.1.0",
     "jsqr": "^1.4.0",
     "lucide-react": "^0.525.0",
@@ -61,6 +107,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.6.3",
+    "recharts": "^2.15.4",
     "sonner": "^2.0.6",
     "tailwind-merge": "^3.3.1",
     "ws": "^8.18.3",

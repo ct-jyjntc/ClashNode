@@ -130,7 +130,17 @@ export async function mergeConfig(
   profileYaml: string | null,
   settings: AppSettings,
   secret: string,
-  options?: { prependRules?: string[]; scriptId?: string | null },
+  options?: {
+    prependRules?: string[];
+    scriptId?: string | null;
+    customProxyGroups?: Array<{
+      name: string;
+      type: string;
+      proxies: string[];
+      url?: string;
+      interval?: number;
+    }>;
+  },
 ): Promise<{ yaml: string; warnings: string[] }> {
   let base: Record<string, unknown> = { ...MINIMAL_BASE };
   if (profileYaml?.trim()) {
@@ -170,22 +180,38 @@ export async function mergeConfig(
   base["external-controller"] = settings.externalController;
   base.secret = secret;
   base.ipv6 = settings.ipv6;
+  // Classic ports (0 = omit/disable)
+  if (settings.ports?.port) base.port = settings.ports.port;
+  else delete base.port;
+  if (settings.ports?.socksPort) base["socks-port"] = settings.ports.socksPort;
+  else delete base["socks-port"];
+  if (settings.ports?.redirPort) base["redir-port"] = settings.ports.redirPort;
+  else delete base["redir-port"];
+  if (settings.ports?.tproxyPort) base["tproxy-port"] = settings.ports.tproxyPort;
+  else delete base["tproxy-port"];
   base["unified-delay"] = base["unified-delay"] ?? true;
   base["tcp-concurrent"] = base["tcp-concurrent"] ?? true;
   base["find-process-mode"] = base["find-process-mode"] ?? "strict";
 
-  const tun =
+  // Align with FlClash desktop TUN patch:
+  // device = app name (not utun*), auto-route true, empty route-address,
+  // dns-hijack any:53, stack mixed. mihomo regenerates utunN itself on darwin.
+  const prevTun =
     (base.tun as Record<string, unknown> | undefined) ??
     ({} as Record<string, unknown>);
   base.tun = {
-    ...tun,
+    ...prevTun,
     enable: settings.tun,
-    stack: tun.stack ?? "mixed",
+    stack: prevTun.stack ?? "mixed",
     "auto-route": true,
     "auto-detect-interface": true,
-    "dns-hijack": tun["dns-hijack"] ?? ["any:53"],
-    device: tun.device ?? "utunClashNode",
+    "dns-hijack": prevTun["dns-hijack"] ?? ["any:53"],
+    // FlClash uses appName ("FlClash"); custom "utun*" names are rejected on darwin
+    device: "ClashNode",
+    "strict-route": prevTun["strict-route"] ?? false,
   };
+  // desktop: clear route-address so mihomo owns full route table via auto-route
+  delete (base.tun as Record<string, unknown>)["route-address"];
 
   const hasProfileDns =
     base.dns != null &&
@@ -206,6 +232,29 @@ export async function mergeConfig(
   if (options?.prependRules?.length) {
     const existing = Array.isArray(base.rules) ? (base.rules as unknown[]) : [];
     base.rules = [...options.prependRules, ...existing];
+  }
+
+  // Visual custom proxy groups — append / replace by name
+  if (options?.customProxyGroups?.length) {
+    const groups = Array.isArray(base["proxy-groups"])
+      ? ([...(base["proxy-groups"] as Group[])] as Group[])
+      : [];
+    for (const g of options.customProxyGroups) {
+      if (!g?.name) continue;
+      const idx = groups.findIndex((x) => x?.name === g.name);
+      const entry: Group = {
+        name: g.name,
+        type: g.type || "select",
+        proxies: Array.isArray(g.proxies) ? g.proxies : [],
+      };
+      if (g.type === "url-test" || g.type === "fallback") {
+        entry.url = g.url || "http://www.gstatic.com/generate_204";
+        entry.interval = g.interval || 300;
+      }
+      if (idx >= 0) groups[idx] = { ...groups[idx], ...entry };
+      else groups.push(entry);
+    }
+    base["proxy-groups"] = groups;
   }
 
   const profileBlock =

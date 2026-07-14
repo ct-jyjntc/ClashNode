@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -24,6 +24,10 @@ export class CoreSupervisor extends EventEmitter {
   private secret = "";
   private intentionalStop = false;
   private restartAttempts = 0;
+  /** Last tun state actually applied to the running process (not settings file). */
+  private runtimeTun = false;
+  /** Hash of last config that passed `mihomo -t` — skip re-test when unchanged. */
+  private lastValidConfigHash: string | null = null;
   api: MihomoApi | null = null;
 
   constructor() {
@@ -53,7 +57,8 @@ export class CoreSupervisor extends EventEmitter {
       controller: settings.externalController,
       mixedPort: settings.mixedPort,
       systemProxy: settings.systemProxy,
-      tun: settings.tun,
+      // Prefer runtime TUN (what the process has), fall back to settings when stopped
+      tun: this.status === "running" ? this.runtimeTun : settings.tun,
       mode: settings.mode,
     };
   }
@@ -78,18 +83,27 @@ export class CoreSupervisor extends EventEmitter {
       settings,
       this.secret,
       {
-        prependRules: current?.prependRules,
+        prependRules: current?.customRules?.length
+          ? current.customRules
+          : current?.prependRules,
         scriptId: current?.scriptId,
+        customProxyGroups: current?.customProxyGroups,
       },
     );
     const configPath = getConfigPath();
+    const configHash = createHash("sha1").update(merged).digest("hex");
     fs.writeFileSync(configPath, merged, "utf8");
     if (warnings.length) {
       for (const w of warnings) {
         this.emit("log", { type: "warning", payload: `[config] ${w}` });
       }
     }
-    return { configPath, warnings, selectedMap: current?.selectedMap ?? {} };
+    return {
+      configPath,
+      warnings,
+      selectedMap: current?.selectedMap ?? {},
+      configHash,
+    };
   }
 
   async applySelectedMap(selectedMap: Record<string, string>) {
@@ -122,28 +136,37 @@ export class CoreSupervisor extends EventEmitter {
       this.setStatus("error", `mihomo binary not found: ${binary}`);
       throw new Error(this.error);
     }
+    // Do not chmod if setuid is already set — that would strip TUN privileges
     try {
-      fs.chmodSync(binary, 0o755);
+      const st = fs.statSync(binary);
+      if ((st.mode & 0o4000) === 0) {
+        fs.chmodSync(binary, 0o755);
+      }
     } catch {
       /* ignore */
     }
 
     const settings = loadSettings();
     const home = getHomeDir();
-    const { configPath, warnings, selectedMap } =
+    const { configPath, warnings, selectedMap, configHash } =
       await this.writeRuntimeConfig(settings);
 
-    // validate
-    try {
-      await this.testConfig(binary, home, configPath);
-    } catch (e) {
-      const raw = e instanceof Error ? e.message : String(e);
-      const hint = warnings.length
-        ? `\n\nConfig notes:\n- ${warnings.join("\n- ")}`
-        : "";
-      const msg = extractConfigError(raw) + hint;
-      this.setStatus("error", msg);
-      throw new Error(msg);
+    // Full `mihomo -t` is expensive; only re-run when merged config changed.
+    const needTest =
+      !this.lastValidConfigHash || this.lastValidConfigHash !== configHash;
+    if (needTest) {
+      try {
+        await this.testConfig(binary, home, configPath);
+        this.lastValidConfigHash = configHash;
+      } catch (e) {
+        const raw = e instanceof Error ? e.message : String(e);
+        const hint = warnings.length
+          ? `\n\nConfig notes:\n- ${warnings.join("\n- ")}`
+          : "";
+        const msg = extractConfigError(raw) + hint;
+        this.setStatus("error", msg);
+        throw new Error(msg);
+      }
     }
 
     const child = spawn(binary, ["-d", home, "-f", configPath], {
@@ -152,6 +175,7 @@ export class CoreSupervisor extends EventEmitter {
       stdio: ["ignore", "pipe", "pipe"],
     });
     this.process = child;
+    this.runtimeTun = !!settings.tun;
 
     child.stdout?.on("data", (buf: Buffer) => {
       this.emit("log", { type: "info", payload: buf.toString() });
@@ -183,8 +207,9 @@ export class CoreSupervisor extends EventEmitter {
       this.version = await waitForApi(this.api);
       this.restartAttempts = 0;
       this.setStatus("running");
+      // Node selection is non-critical for "started" feedback — fire and forget
       if (selectedMap && Object.keys(selectedMap).length) {
-        await this.applySelectedMap(selectedMap);
+        void this.applySelectedMap(selectedMap);
       }
       return this.getState();
     } catch (e) {
@@ -220,9 +245,11 @@ export class CoreSupervisor extends EventEmitter {
     const proc = this.process;
     this.process = null;
     this.api = null;
+    this.runtimeTun = false;
     if (proc && !proc.killed) {
       proc.kill("SIGTERM");
       await new Promise<void>((resolve) => {
+        // FlClash-style snappy stop: escalate quickly instead of waiting 3s
         const t = setTimeout(() => {
           try {
             proc.kill("SIGKILL");
@@ -230,7 +257,7 @@ export class CoreSupervisor extends EventEmitter {
             /* ignore */
           }
           resolve();
-        }, 3000);
+        }, 600);
         proc.once("exit", () => {
           clearTimeout(t);
           resolve();
@@ -265,11 +292,16 @@ export class CoreSupervisor extends EventEmitter {
   }
 
   async applySettings(settings: AppSettings) {
+    const prevPort = this.getState().mixedPort;
+    const prevController = this.getState().controller;
+    const prevTun = this.runtimeTun;
+    // TUN enable/disable on a live process: FlClash always restarts after
+    // privilege grant so setuid takes effect. Patch-only leaves euid as the user.
     const needRestart =
       this.status === "running" &&
-      (settings.mixedPort !== this.getState().mixedPort ||
-        settings.externalController !== this.getState().controller ||
-        settings.tun !== this.getState().tun);
+      (settings.mixedPort !== prevPort ||
+        settings.externalController !== prevController ||
+        settings.tun !== prevTun);
 
     if (this.status === "running" && this.api && !needRestart) {
       await this.writeRuntimeConfig(settings);
@@ -279,7 +311,6 @@ export class CoreSupervisor extends EventEmitter {
         "allow-lan": settings.allowLan,
         "mixed-port": settings.mixedPort,
         ipv6: settings.ipv6,
-        tun: { enable: settings.tun },
       });
       this.setStatus("running");
       return this.getState();
@@ -299,26 +330,52 @@ export class CoreSupervisor extends EventEmitter {
     return this.api;
   }
 
-  authorizeTunBinary(): Promise<{ ok: boolean; message: string }> {
+  /** FlClash: stat -f '%Su:%Sg %Sp' → root:admin + rws */
+  async checkTunAuthorized(): Promise<boolean> {
+    if (process.platform !== "darwin") return true;
     const binary = getMihomoPath();
-    const script = `do shell script "chown root:admin ${shellEscape(binary)} && chmod +sx ${shellEscape(binary)}" with administrator privileges`;
-    return new Promise((resolve) => {
-      const child = spawn("osascript", ["-e", script]);
-      let err = "";
-      child.stderr.on("data", (b) => {
-        err += b.toString();
+    if (!fs.existsSync(binary)) return false;
+    try {
+      const st = fs.statSync(binary);
+      // setuid bit + owned by root
+      return st.uid === 0 && (st.mode & 0o4000) !== 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * FlClash authorizeCore: chown root:admin + chmod +sx via osascript.
+   * Caller must restart the core process after success so setuid applies.
+   */
+  authorizeTunBinary(): Promise<{ ok: boolean; message: string }> {
+    return (async () => {
+      if (await this.checkTunAuthorized()) {
+        return { ok: true, message: "Already authorized" };
+      }
+      const binary = getMihomoPath();
+      if (!fs.existsSync(binary)) {
+        return { ok: false, message: `mihomo not found: ${binary}` };
+      }
+      const script = `do shell script "chown root:admin ${shellEscape(binary)} && chmod +sx ${shellEscape(binary)}" with administrator privileges`;
+      return await new Promise<{ ok: boolean; message: string }>((resolve) => {
+        const child = spawn("osascript", ["-e", script]);
+        let err = "";
+        child.stderr.on("data", (b) => {
+          err += b.toString();
+        });
+        child.on("close", (code) => {
+          if (code === 0) {
+            resolve({ ok: true, message: "Privileges granted" });
+          } else {
+            resolve({
+              ok: false,
+              message: err.trim() || "Authorization cancelled or failed",
+            });
+          }
+        });
       });
-      child.on("close", (code) => {
-        if (code === 0) {
-          resolve({ ok: true, message: "Privileges granted" });
-        } else {
-          resolve({
-            ok: false,
-            message: err.trim() || "Authorization cancelled or failed",
-          });
-        }
-      });
-    });
+    })();
   }
 }
 

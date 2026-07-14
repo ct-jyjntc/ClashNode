@@ -3,92 +3,116 @@ import { promisify } from "node:util";
 import { DEFAULT_BYPASS } from "../shared/types";
 
 const execFileAsync = promisify(execFile);
+const NETWORKSETUP = "/usr/sbin/networksetup";
 
-async function listNetworkServices(): Promise<string[]> {
-  const { stdout } = await execFileAsync("/usr/sbin/networksetup", [
+let servicesCache: { at: number; list: string[] } | null = null;
+const SERVICES_TTL_MS = 30_000;
+
+/** Last applied desired state — skip no-op toggles. */
+let lastApplied: { enabled: boolean; port: number; bypassKey: string } | null =
+  null;
+
+async function listServices(): Promise<string[]> {
+  const now = Date.now();
+  if (servicesCache && now - servicesCache.at < SERVICES_TTL_MS) {
+    return servicesCache.list;
+  }
+  const { stdout } = await execFileAsync(NETWORKSETUP, [
     "-listallnetworkservices",
   ]);
-  return stdout
+  const list = stdout
     .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && !l.includes("asterisk") && !l.startsWith("An asterisk"));
+    .map((s) => s.trim())
+    .filter(
+      (s) =>
+        s &&
+        !s.startsWith("An asterisk") &&
+        !s.startsWith("*"), // disabled services
+    );
+  servicesCache = { at: now, list };
+  return list;
 }
 
-export async function enableSystemProxy(port: number, bypass = DEFAULT_BYPASS) {
-  const services = await listNetworkServices();
+/**
+ * Run many networksetup invocations in one /bin/sh process.
+ * Spawning networksetup once per flag is the main latency source on macOS.
+ */
+function runNetworksetupScript(lines: string[]) {
+  if (!lines.length) return Promise.resolve();
+  // networksetup path is fixed; args are already shell-quoted below
+  return execFileAsync("/bin/sh", ["-c", lines.join("\n")], {
+    timeout: 15_000,
+  }).then(() => undefined);
+}
+
+function q(s: string) {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+function ns(...args: string[]) {
+  return `${NETWORKSETUP} ${args.map(q).join(" ")}`;
+}
+
+/**
+ * Enable system HTTP/HTTPS/SOCKS on every active network service.
+ * FlClash-style full coverage, but batched: one shell per service, all
+ * services in parallel (not N×7 serial networksetup spawns).
+ */
+export async function enableSystemProxy(
+  port: number,
+  bypass = DEFAULT_BYPASS,
+) {
   const host = "127.0.0.1";
-  for (const service of services) {
-    try {
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setwebproxy",
-        service,
-        host,
-        String(port),
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setsecurewebproxy",
-        service,
-        host,
-        String(port),
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setsocksfirewallproxy",
-        service,
-        host,
-        String(port),
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setwebproxystate",
-        service,
-        "on",
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setsecurewebproxystate",
-        service,
-        "on",
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setsocksfirewallproxystate",
-        service,
-        "on",
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setproxybypassdomains",
-        service,
-        ...bypass,
-      ]);
-    } catch {
-      // Some services (Thunderbolt Bridge etc.) may fail; ignore.
-    }
+  const portStr = String(port);
+  const bypassArgs = bypass.length ? bypass : ["Empty"];
+  const bypassKey = bypassArgs.join("\n");
+
+  if (
+    lastApplied?.enabled &&
+    lastApplied.port === port &&
+    lastApplied.bypassKey === bypassKey
+  ) {
+    return;
   }
+
+  const services = await listServices();
+  await Promise.all(
+    services.map((service) =>
+      runNetworksetupScript([
+        ns("-setwebproxy", service, host, portStr),
+        ns("-setsecurewebproxy", service, host, portStr),
+        ns("-setsocksfirewallproxy", service, host, portStr),
+        ns("-setproxybypassdomains", service, ...bypassArgs),
+        ns("-setwebproxystate", service, "on"),
+        ns("-setsecurewebproxystate", service, "on"),
+        ns("-setsocksfirewallproxystate", service, "on"),
+      ]).catch(() => undefined),
+    ),
+  );
+
+  lastApplied = { enabled: true, port, bypassKey };
 }
 
 export async function disableSystemProxy() {
-  const services = await listNetworkServices();
-  for (const service of services) {
-    try {
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setwebproxystate",
-        service,
-        "off",
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setsecurewebproxystate",
-        service,
-        "off",
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setsocksfirewallproxystate",
-        service,
-        "off",
-      ]);
-      await execFileAsync("/usr/sbin/networksetup", [
-        "-setautoproxystate",
-        service,
-        "off",
-      ]);
-    } catch {
-      /* ignore */
-    }
-  }
+  if (lastApplied && !lastApplied.enabled) return;
+
+  const services = await listServices();
+  await Promise.all(
+    services.map((service) =>
+      runNetworksetupScript([
+        ns("-setwebproxystate", service, "off"),
+        ns("-setsecurewebproxystate", service, "off"),
+        ns("-setsocksfirewallproxystate", service, "off"),
+        ns("-setautoproxystate", service, "off"),
+      ]).catch(() => undefined),
+    ),
+  );
+
+  lastApplied = { enabled: false, port: 0, bypassKey: "" };
+}
+
+/** Drop caches (e.g. after network change). */
+export function invalidateProxyCache() {
+  servicesCache = null;
+  lastApplied = null;
 }

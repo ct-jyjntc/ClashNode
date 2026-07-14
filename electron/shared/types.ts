@@ -33,6 +33,38 @@ export interface WebDavSettings {
 
 export type ThemeMode = "system" | "light" | "dark";
 
+export type ThemePreset = "mono" | "ink" | "slate" | "forest" | "rose";
+
+export interface PortSettings {
+  /** classic HTTP port; 0 = disabled */
+  port: number;
+  /** SOCKS port; 0 = disabled */
+  socksPort: number;
+  redirPort: number;
+  tproxyPort: number;
+}
+
+export interface OnDemandSettings {
+  enabled: boolean;
+  /** Only auto-start core on these SSIDs (empty = any) */
+  ssids: string[];
+  /** Pause proxy when offline */
+  pauseWhenOffline: boolean;
+}
+
+export type DashboardWidgetId =
+  | "status"
+  | "upload"
+  | "download"
+  | "port"
+  | "mode"
+  | "network"
+  | "traffic";
+
+export interface DashboardLayout {
+  widgets: DashboardWidgetId[];
+}
+
 export interface AppSettings {
   mixedPort: number;
   allowLan: boolean;
@@ -60,6 +92,11 @@ export interface AppSettings {
   /** UI text scale 0.85–1.25 */
   textScale: number;
   checkUpdateOnLaunch: boolean;
+  /** Optional classic ports alongside mixed-port */
+  ports: PortSettings;
+  onDemand: OnDemandSettings;
+  dashboard: DashboardLayout;
+  themePreset: ThemePreset;
 }
 
 export interface SubscriptionInfo {
@@ -86,6 +123,18 @@ export interface Profile {
   prependRules?: string[];
   /** Optional JS overwrite script id (main(config) → config) */
   scriptId?: string | null;
+  /** Visual overwrite: extra proxy groups appended / merged by name */
+  customProxyGroups?: CustomProxyGroup[];
+  /** Visual overwrite: rules replacing prependRules if set (same semantics) */
+  customRules?: string[];
+}
+
+export interface CustomProxyGroup {
+  name: string;
+  type: "select" | "url-test" | "fallback" | "load-balance";
+  proxies: string[];
+  url?: string;
+  interval?: number;
 }
 
 export interface ProfilesState {
@@ -250,6 +299,31 @@ export const DEFAULT_HOTKEYS: HotkeySettings = {
   showWindow: "CommandOrControl+Shift+V",
 };
 
+export const DEFAULT_PORTS: PortSettings = {
+  port: 0,
+  socksPort: 0,
+  redirPort: 0,
+  tproxyPort: 0,
+};
+
+export const DEFAULT_ON_DEMAND: OnDemandSettings = {
+  enabled: false,
+  ssids: [],
+  pauseWhenOffline: true,
+};
+
+export const DEFAULT_DASHBOARD: DashboardLayout = {
+  widgets: [
+    "status",
+    "upload",
+    "download",
+    "port",
+    "mode",
+    "network",
+    "traffic",
+  ],
+};
+
 export const DEFAULT_SETTINGS: AppSettings = {
   mixedPort: 7890,
   allowLan: false,
@@ -265,12 +339,32 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoStartCore: false,
   minimizeToTray: true,
   bypassDomains: [...DEFAULT_BYPASS],
-  dns: { ...DEFAULT_DNS, defaultNameserver: [...DEFAULT_DNS.defaultNameserver], nameserver: [...DEFAULT_DNS.nameserver], fallback: [...DEFAULT_DNS.fallback] },
+  dns: {
+    ...DEFAULT_DNS,
+    defaultNameserver: [...DEFAULT_DNS.defaultNameserver],
+    nameserver: [...DEFAULT_DNS.nameserver],
+    fallback: [...DEFAULT_DNS.fallback],
+  },
   hotkeys: { ...DEFAULT_HOTKEYS },
   webdav: { ...DEFAULT_WEBDAV },
   accentColor: "",
   textScale: 1,
   checkUpdateOnLaunch: true,
+  ports: { ...DEFAULT_PORTS },
+  onDemand: { ...DEFAULT_ON_DEMAND, ssids: [] },
+  dashboard: { widgets: [...DEFAULT_DASHBOARD.widgets] },
+  themePreset: "mono",
+};
+
+export const THEME_PRESETS: Record<
+  ThemePreset,
+  { label: string; accent: string }
+> = {
+  mono: { label: "Mono", accent: "" },
+  ink: { label: "Ink", accent: "#111827" },
+  slate: { label: "Slate", accent: "#334155" },
+  forest: { label: "Forest", accent: "#14532d" },
+  rose: { label: "Rose", accent: "#9f1239" },
 };
 
 export interface UpdateCheckResult {

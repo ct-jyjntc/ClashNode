@@ -3,6 +3,7 @@ import type {
   AppSettings,
   ConnectionsSnapshot,
   CoreState,
+  CustomProxyGroup,
   GeoResourceFile,
   LogLine,
   Profile,
@@ -54,6 +55,13 @@ const api = {
     scriptId: string | null,
   ): Promise<Profile> =>
     ipcRenderer.invoke("profiles:set-script", { id, scriptId }),
+  setCustomProxyGroups: (
+    id: string,
+    groups: CustomProxyGroup[],
+  ): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-custom-groups", { id, groups }),
+  setCustomRules: (id: string, rules: string[]): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-custom-rules", { id, rules }),
   reorderProfiles: (ids: string[]): Promise<ProfilesState> =>
     ipcRenderer.invoke("profiles:reorder", ids),
   getMergedPreview: (id?: string): Promise<string> =>
@@ -94,6 +102,43 @@ const api = {
     checkedAt: string;
     error?: string;
   }> => ipcRenderer.invoke("app:check-update"),
+  checkAppUpdate: (): Promise<{
+    ok: boolean;
+    version?: string | null;
+    error?: string;
+  }> => ipcRenderer.invoke("app:check-app-update"),
+  downloadAppUpdate: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke("app:download-update"),
+  quitAndInstall: (): Promise<boolean> =>
+    ipcRenderer.invoke("app:quit-and-install"),
+  onUpdaterAvailable: (
+    cb: (info: { version: string; releaseNotes: unknown }) => void,
+  ) => {
+    const listener = (
+      _: Electron.IpcRendererEvent,
+      info: { version: string; releaseNotes: unknown },
+    ) => cb(info);
+    ipcRenderer.on("updater:available", listener);
+    return () => ipcRenderer.removeListener("updater:available", listener);
+  },
+  onUpdaterProgress: (
+    cb: (p: { percent: number; transferred: number; total: number }) => void,
+  ) => {
+    const listener = (
+      _: Electron.IpcRendererEvent,
+      p: { percent: number; transferred: number; total: number },
+    ) => cb(p);
+    ipcRenderer.on("updater:progress", listener);
+    return () => ipcRenderer.removeListener("updater:progress", listener);
+  },
+  onUpdaterDownloaded: (cb: (info: { version: string }) => void) => {
+    const listener = (
+      _: Electron.IpcRendererEvent,
+      info: { version: string },
+    ) => cb(info);
+    ipcRenderer.on("updater:downloaded", listener);
+    return () => ipcRenderer.removeListener("updater:downloaded", listener);
+  },
 
   getRuntimeConfig: (): Promise<string> =>
     ipcRenderer.invoke("config:runtime"),

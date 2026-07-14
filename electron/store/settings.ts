@@ -1,11 +1,18 @@
 import {
+  DEFAULT_DASHBOARD,
   DEFAULT_DNS,
   DEFAULT_HOTKEYS,
+  DEFAULT_ON_DEMAND,
+  DEFAULT_PORTS,
   DEFAULT_SETTINGS,
   DEFAULT_WEBDAV,
   type AppSettings,
+  type DashboardLayout,
   type DnsSettings,
   type HotkeySettings,
+  type OnDemandSettings,
+  type PortSettings,
+  type ThemePreset,
   type WebDavSettings,
 } from "../shared/types";
 import { getSettingsPath, readJsonFile, writeJsonFile } from "./paths";
@@ -55,8 +62,37 @@ function normalizeWebDav(
   };
 }
 
+function normalizePorts(raw: Partial<PortSettings> | undefined): PortSettings {
+  return {
+    port: Number(raw?.port) || 0,
+    socksPort: Number(raw?.socksPort) || 0,
+    redirPort: Number(raw?.redirPort) || 0,
+    tproxyPort: Number(raw?.tproxyPort) || 0,
+  };
+}
+
+function normalizeOnDemand(
+  raw: Partial<OnDemandSettings> | undefined,
+): OnDemandSettings {
+  return {
+    enabled: !!raw?.enabled,
+    ssids: Array.isArray(raw?.ssids) ? raw!.ssids.filter(Boolean) : [],
+    pauseWhenOffline: raw?.pauseWhenOffline !== false,
+  };
+}
+
+function normalizeDashboard(
+  raw: Partial<DashboardLayout> | undefined,
+): DashboardLayout {
+  const widgets = Array.isArray(raw?.widgets)
+    ? raw!.widgets
+    : [...DEFAULT_DASHBOARD.widgets];
+  return { widgets: widgets.length ? widgets : [...DEFAULT_DASHBOARD.widgets] };
+}
+
 export function loadSettings(): AppSettings {
   const raw = readJsonFile<Partial<AppSettings>>(getSettingsPath(), {});
+  const presets: ThemePreset[] = ["mono", "ink", "slate", "forest", "rose"];
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...raw,
@@ -73,6 +109,12 @@ export function loadSettings(): AppSettings {
         ? raw.textScale
         : 1,
     checkUpdateOnLaunch: raw.checkUpdateOnLaunch !== false,
+    ports: normalizePorts(raw.ports ?? DEFAULT_PORTS),
+    onDemand: normalizeOnDemand(raw.onDemand ?? DEFAULT_ON_DEMAND),
+    dashboard: normalizeDashboard(raw.dashboard ?? DEFAULT_DASHBOARD),
+    themePreset: presets.includes(raw.themePreset as ThemePreset)
+      ? (raw.themePreset as ThemePreset)
+      : "mono",
   };
   return merged;
 }
@@ -99,6 +141,16 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     webdav: patch.webdav
       ? normalizeWebDav({ ...prev.webdav, ...patch.webdav })
       : prev.webdav,
+    ports: patch.ports
+      ? normalizePorts({ ...prev.ports, ...patch.ports })
+      : prev.ports,
+    onDemand: patch.onDemand
+      ? normalizeOnDemand({ ...prev.onDemand, ...patch.onDemand })
+      : prev.onDemand,
+    dashboard: patch.dashboard
+      ? normalizeDashboard({ ...prev.dashboard, ...patch.dashboard })
+      : prev.dashboard,
+    themePreset: patch.themePreset ?? prev.themePreset,
   };
   saveSettings(next);
   return next;

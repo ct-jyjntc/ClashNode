@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowDownToLine,
@@ -8,6 +8,15 @@ import {
   RefreshCw,
   Shield,
 } from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { PageHeader } from "@/shared/components/page-header";
 import { MetricCard } from "@/shared/components/metric-card";
 import { Button } from "@/components/ui/button";
@@ -19,7 +28,17 @@ import { useAppStore } from "@/shared/hooks/use-app-state";
 import { getApi } from "@/shared/lib/api";
 import { formatBytes, formatSpeed } from "@/shared/lib/utils";
 import { useI18n } from "@/shared/i18n";
-import type { ProxyMode } from "@/entities/mihomo/types";
+import type { DashboardWidgetId, ProxyMode } from "@/entities/mihomo/types";
+
+const DEFAULT_WIDGETS: DashboardWidgetId[] = [
+  "status",
+  "upload",
+  "download",
+  "port",
+  "mode",
+  "network",
+  "traffic",
+];
 
 export function DashboardPage() {
   const core = useAppStore((s) => s.core);
@@ -29,7 +48,9 @@ export function DashboardPage() {
   const setCore = useAppStore((s) => s.setCore);
   const setSettings = useAppStore((s) => s.setSettings);
   const [busy, setBusy] = useState(false);
-  const [history, setHistory] = useState<{ up: number; down: number }[]>([]);
+  const [history, setHistory] = useState<
+    { t: number; up: number; down: number }[]
+  >([]);
   const { t } = useI18n();
 
   const running = core?.status === "running";
@@ -37,21 +58,52 @@ export function DashboardPage() {
     (p) => p.id === profiles.currentId,
   );
 
+  const widgets = settings?.dashboard?.widgets?.length
+    ? settings.dashboard.widgets
+    : DEFAULT_WIDGETS;
+  const show = (id: DashboardWidgetId) => widgets.includes(id);
+
   useEffect(() => {
     setHistory((h) => {
-      const next = [...h, { up: traffic.up, down: traffic.down }];
-      return next.slice(-40);
+      const next = [
+        ...h,
+        { t: Date.now(), up: traffic.up, down: traffic.down },
+      ];
+      return next.slice(-60);
     });
   }, [traffic.up, traffic.down]);
 
+  const chartData = useMemo(
+    () =>
+      history.map((h, i) => ({
+        i,
+        up: h.up,
+        down: h.down,
+        label: new Date(h.t).toLocaleTimeString(),
+      })),
+    [history],
+  );
+
   async function toggleCore() {
+    if (!core) return;
     setBusy(true);
+    // Optimistic: flip status immediately (main also pushes core:state)
+    const wasRunning = running;
+    setCore({
+      ...core,
+      status: wasRunning ? "stopping" : "starting",
+    });
     try {
       const api = getApi();
-      const state = running ? await api.stopCore() : await api.startCore();
+      const state = wasRunning ? await api.stopCore() : await api.startCore();
       setCore(state);
-      toast.success(running ? t.dashboard.stopped : t.dashboard.started);
+      toast.success(wasRunning ? t.dashboard.stopped : t.dashboard.started);
     } catch (e) {
+      try {
+        setCore(await getApi().getCoreState());
+      } catch {
+        /* ignore */
+      }
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -59,11 +111,18 @@ export function DashboardPage() {
   }
 
   async function restart() {
+    if (!core) return;
     setBusy(true);
+    setCore({ ...core, status: "starting" });
     try {
       setCore(await getApi().restartCore());
       toast.success(t.dashboard.restarted);
     } catch (e) {
+      try {
+        setCore(await getApi().getCoreState());
+      } catch {
+        /* ignore */
+      }
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -71,6 +130,7 @@ export function DashboardPage() {
   }
 
   async function setMode(mode: ProxyMode) {
+    if (settings) setSettings({ ...settings, mode });
     try {
       await getApi().setMode(mode);
       setSettings(await getApi().getSettings());
@@ -80,18 +140,23 @@ export function DashboardPage() {
   }
 
   async function toggleSystemProxy(enabled: boolean) {
+    // Optimistic UI — IPC returns after settings write; networksetup is async
+    if (settings) setSettings({ ...settings, systemProxy: enabled });
     try {
       setSettings(await getApi().setSystemProxy(enabled));
     } catch (e) {
+      if (settings) setSettings({ ...settings, systemProxy: !enabled });
       toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
   async function toggleTun(enabled: boolean) {
+    if (settings) setSettings({ ...settings, tun: enabled });
     try {
       setSettings(await getApi().updateSettings({ tun: enabled }));
       toast.success(enabled ? t.dashboard.tunOn : t.dashboard.tunOff);
     } catch (e) {
+      if (settings) setSettings({ ...settings, tun: !enabled });
       toast.error(e instanceof Error ? e.message : String(e));
     }
   }
@@ -105,7 +170,12 @@ export function DashboardPage() {
     }
   }
 
-  const maxHist = Math.max(1, ...history.map((h) => h.up + h.down));
+  const metricCount = [
+    show("status"),
+    show("upload"),
+    show("download"),
+    show("port"),
+  ].filter(Boolean).length;
 
   return (
     <div className="space-y-6">
@@ -150,165 +220,257 @@ export function DashboardPage() {
         }
       />
 
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label={t.dashboard.status}
-          value={
-            <span className="flex items-center gap-2">
-              <span
-                className={
-                  running
-                    ? "size-2 rounded-full bg-success"
-                    : "size-2 rounded-full bg-muted-foreground/40"
-                }
-              />
-              {core?.status ?? "—"}
-            </span>
+      {metricCount > 0 ? (
+        <section
+          className={
+            metricCount >= 4
+              ? "grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
+              : metricCount === 3
+                ? "grid gap-2 sm:grid-cols-3"
+                : metricCount === 2
+                  ? "grid gap-2 sm:grid-cols-2"
+                  : "grid gap-2"
           }
-          hint={core?.version ? `mihomo ${core.version}` : undefined}
-        />
-        <MetricCard
-          label={t.dashboard.upload}
-          value={
-            <span className="flex items-center gap-2">
-              <ArrowUpFromLine
-                className="size-4 text-muted-foreground"
-                strokeWidth={1.8}
-              />
-              {formatSpeed(traffic.up)}
-            </span>
-          }
-          hint={
-            traffic.upTotal != null
-              ? `${t.dashboard.total} ${formatBytes(traffic.upTotal)}`
-              : undefined
-          }
-        />
-        <MetricCard
-          label={t.dashboard.download}
-          value={
-            <span className="flex items-center gap-2">
-              <ArrowDownToLine
-                className="size-4 text-muted-foreground"
-                strokeWidth={1.8}
-              />
-              {formatSpeed(traffic.down)}
-            </span>
-          }
-          hint={
-            traffic.downTotal != null
-              ? `${t.dashboard.total} ${formatBytes(traffic.downTotal)}`
-              : undefined
-          }
-        />
-        <MetricCard
-          label={t.dashboard.mixedPort}
-          value={
-            <span className="tabular-nums">{settings?.mixedPort ?? 7890}</span>
-          }
-          hint={settings?.externalController}
-        />
-      </section>
+        >
+          {show("status") ? (
+            <MetricCard
+              label={t.dashboard.status}
+              value={
+                <span className="flex items-center gap-2">
+                  <span
+                    className={
+                      running
+                        ? "size-2 rounded-full bg-success"
+                        : "size-2 rounded-full bg-muted-foreground/40"
+                    }
+                  />
+                  {core?.status ?? "—"}
+                </span>
+              }
+              hint={core?.version ? `mihomo ${core.version}` : undefined}
+            />
+          ) : null}
+          {show("upload") ? (
+            <MetricCard
+              label={t.dashboard.upload}
+              value={
+                <span className="flex items-center gap-2">
+                  <ArrowUpFromLine
+                    className="size-4 text-muted-foreground"
+                    strokeWidth={1.8}
+                  />
+                  {formatSpeed(traffic.up)}
+                </span>
+              }
+              hint={
+                traffic.upTotal != null
+                  ? `${t.dashboard.total} ${formatBytes(traffic.upTotal)}`
+                  : undefined
+              }
+            />
+          ) : null}
+          {show("download") ? (
+            <MetricCard
+              label={t.dashboard.download}
+              value={
+                <span className="flex items-center gap-2">
+                  <ArrowDownToLine
+                    className="size-4 text-muted-foreground"
+                    strokeWidth={1.8}
+                  />
+                  {formatSpeed(traffic.down)}
+                </span>
+              }
+              hint={
+                traffic.downTotal != null
+                  ? `${t.dashboard.total} ${formatBytes(traffic.downTotal)}`
+                  : undefined
+              }
+            />
+          ) : null}
+          {show("port") ? (
+            <MetricCard
+              label={t.dashboard.mixedPort}
+              value={
+                <span className="tabular-nums">
+                  {settings?.mixedPort ?? 7890}
+                </span>
+              }
+              hint={settings?.externalController}
+            />
+          ) : null}
+        </section>
+      ) : null}
 
-      <section className="grid gap-2 lg:grid-cols-2">
+      {show("mode") || show("network") ? (
+        <section
+          className={
+            show("mode") && show("network")
+              ? "grid gap-2 lg:grid-cols-2"
+              : "grid gap-2"
+          }
+        >
+          {show("mode") ? (
+            <Card className="p-4 sm:p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-sm font-medium">
+                  {t.dashboard.outboundMode}
+                </h2>
+                <Badge variant="secondary">{settings?.mode ?? "rule"}</Badge>
+              </div>
+              <Tabs
+                value={settings?.mode ?? "rule"}
+                onValueChange={(v) => void setMode(v as ProxyMode)}
+              >
+                <TabsList>
+                  <TabsTrigger value="rule">Rule</TabsTrigger>
+                  <TabsTrigger value="global">Global</TabsTrigger>
+                  <TabsTrigger value="direct">Direct</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                {t.dashboard.modeLive}
+              </p>
+            </Card>
+          ) : null}
+
+          {show("network") ? (
+            <Card className="space-y-3 p-4 sm:p-5">
+              <h2 className="text-sm font-medium">{t.dashboard.network}</h2>
+              <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs text-foreground">
+                    {t.dashboard.systemProxy}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t.dashboard.systemProxyHint}:
+                    {settings?.mixedPort ?? 7890}
+                  </p>
+                </div>
+                <Switch
+                  checked={!!settings?.systemProxy}
+                  onCheckedChange={(v) => void toggleSystemProxy(v)}
+                  aria-label={t.dashboard.systemProxy}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs text-foreground">
+                    <Shield className="size-3.5" strokeWidth={1.8} />
+                    {t.dashboard.tun}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t.dashboard.tunHint}
+                  </p>
+                </div>
+                <Switch
+                  checked={!!settings?.tun}
+                  onCheckedChange={(v) => void toggleTun(v)}
+                  aria-label={t.dashboard.tun}
+                />
+              </div>
+            </Card>
+          ) : null}
+        </section>
+      ) : null}
+
+      {show("traffic") ? (
         <Card className="p-4 sm:p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-medium">{t.dashboard.outboundMode}</h2>
-            <Badge variant="secondary">{settings?.mode ?? "rule"}</Badge>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-medium">{t.dashboard.trafficHistory}</h2>
+            <span className="text-[11px] text-muted-foreground tabular-nums">
+              ↑ {formatSpeed(traffic.up)} · ↓ {formatSpeed(traffic.down)}
+            </span>
           </div>
-          <Tabs
-            value={settings?.mode ?? "rule"}
-            onValueChange={(v) => void setMode(v as ProxyMode)}
-          >
-            <TabsList>
-              <TabsTrigger value="rule">Rule</TabsTrigger>
-              <TabsTrigger value="global">Global</TabsTrigger>
-              <TabsTrigger value="direct">Direct</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <p className="mt-3 text-[11px] text-muted-foreground">
-            {t.dashboard.modeLive}
-          </p>
-        </Card>
-
-        <Card className="space-y-3 p-4 sm:p-5">
-          <h2 className="text-sm font-medium">{t.dashboard.network}</h2>
-          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
-            <div className="min-w-0">
-              <p className="text-xs text-foreground">
-                {t.dashboard.systemProxy}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                {t.dashboard.systemProxyHint}:{settings?.mixedPort ?? 7890}
-              </p>
-            </div>
-            <Switch
-              checked={!!settings?.systemProxy}
-              onCheckedChange={(v) => void toggleSystemProxy(v)}
-              aria-label={t.dashboard.systemProxy}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
-            <div className="min-w-0">
-              <p className="flex items-center gap-1.5 text-xs text-foreground">
-                <Shield className="size-3.5" strokeWidth={1.8} />
-                {t.dashboard.tun}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                {t.dashboard.tunHint}
-              </p>
-            </div>
-            <Switch
-              checked={!!settings?.tun}
-              onCheckedChange={(v) => void toggleTun(v)}
-              aria-label={t.dashboard.tun}
-            />
-          </div>
-        </Card>
-      </section>
-
-      <Card className="p-4 sm:p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">{t.dashboard.trafficHistory}</h2>
-          <span className="text-[11px] text-muted-foreground tabular-nums">
-            ↑ {formatSpeed(traffic.up)} · ↓ {formatSpeed(traffic.down)}
-          </span>
-        </div>
-        <div className="flex h-24 items-end gap-px">
-          {history.length
-            ? history.map((h, i) => {
-                const total = h.up + h.down;
-                const pct = Math.max(4, Math.round((total / maxHist) * 100));
-                const upPct =
-                  total > 0 ? Math.round((h.up / total) * pct) : 0;
-                return (
-                  <div
-                    key={i}
-                    className="flex min-w-0 flex-1 flex-col justify-end gap-px"
-                    style={{ height: "100%" }}
-                    title={`↑ ${formatSpeed(h.up)} ↓ ${formatSpeed(h.down)}`}
-                  >
-                    <div
-                      className="w-full rounded-sm bg-foreground/70"
-                      style={{ height: `${upPct}%` }}
-                    />
-                    <div
-                      className="w-full rounded-sm bg-foreground/25"
-                      style={{ height: `${Math.max(0, pct - upPct)}%` }}
-                    />
-                  </div>
-                );
-              })
-            : (
+          <div className="h-40 w-full">
+            {chartData.length > 1 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={chartData}
+                  margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="upFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop
+                        offset="0%"
+                        stopColor="currentColor"
+                        stopOpacity={0.35}
+                      />
+                      <stop
+                        offset="100%"
+                        stopColor="currentColor"
+                        stopOpacity={0.02}
+                      />
+                    </linearGradient>
+                    <linearGradient id="downFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop
+                        offset="0%"
+                        stopColor="currentColor"
+                        stopOpacity={0.18}
+                      />
+                      <stop
+                        offset="100%"
+                        stopColor="currentColor"
+                        stopOpacity={0.01}
+                      />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    stroke="currentColor"
+                    strokeOpacity={0.06}
+                    vertical={false}
+                  />
+                  <XAxis dataKey="i" hide />
+                  <YAxis
+                    width={40}
+                    tick={{ fontSize: 10, fill: "currentColor", opacity: 0.45 }}
+                    tickFormatter={(v: number) => formatSpeed(Number(v))}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "hsl(var(--popover))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: 8,
+                      fontSize: 11,
+                    }}
+                    formatter={(value: number | string, name: string) => [
+                      formatSpeed(Number(value)),
+                      name === "up" ? "↑" : "↓",
+                    ]}
+                    labelFormatter={(
+                      _label: unknown,
+                      payload?: Array<{ payload?: { label?: string } }>,
+                    ) => payload?.[0]?.payload?.label ?? ""}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="up"
+                    stroke="currentColor"
+                    strokeOpacity={0.85}
+                    fill="url(#upFill)"
+                    strokeWidth={1.5}
+                    isAnimationActive={false}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="down"
+                    stroke="currentColor"
+                    strokeOpacity={0.4}
+                    fill="url(#downFill)"
+                    strokeWidth={1.25}
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
               <div className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
-                —
+                {t.dashboard.chartEmpty}
               </div>
             )}
-        </div>
-      </Card>
-
-      {core?.error ? (
-        <Card className="p-4 text-xs text-destructive">{core.error}</Card>
+          </div>
+        </Card>
       ) : null}
     </div>
   );

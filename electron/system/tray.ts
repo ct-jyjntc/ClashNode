@@ -8,7 +8,7 @@ import {
 import type { CoreSupervisor } from "../core/supervisor";
 import type { AppSettings } from "../shared/types";
 import { loadSettings, updateSettings } from "../store/settings";
-import { disableSystemProxy, enableSystemProxy } from "./proxy-mac";
+import { disableSystemProxy, enableSystemProxy } from "./proxy";
 
 let tray: Tray | null = null;
 let lastUp = 0;
@@ -111,7 +111,7 @@ export function setupTray(
           try {
             if (running) {
               await supervisor.stop();
-              await disableSystemProxy();
+              void disableSystemProxy().catch(() => undefined);
               try {
                 tray?.setTitle("");
               } catch {
@@ -120,10 +120,10 @@ export function setupTray(
             } else {
               await supervisor.start();
               if (settings.systemProxy) {
-                await enableSystemProxy(
+                void enableSystemProxy(
                   settings.mixedPort,
                   settings.bypassDomains,
-                );
+                ).catch(() => undefined);
               }
             }
           } catch {
@@ -160,19 +160,21 @@ export function setupTray(
         label: "System Proxy",
         type: "checkbox",
         checked: settings.systemProxy,
-        click: async (item) => {
+        click: (item) => {
           const next = updateSettings({ systemProxy: item.checked });
-          try {
-            if (item.checked && supervisor.getState().status === "running") {
-              await enableSystemProxy(next.mixedPort, next.bypassDomains);
-            } else {
-              await disableSystemProxy();
+          getMainWindow()?.webContents.send("settings:changed", next);
+          void (async () => {
+            try {
+              if (item.checked && supervisor.getState().status === "running") {
+                await enableSystemProxy(next.mixedPort, next.bypassDomains);
+              } else {
+                await disableSystemProxy();
+              }
+            } catch {
+              /* ignore */
             }
-          } catch {
-            /* ignore */
-          }
-          getMainWindow()?.webContents.send("settings:changed", loadSettings());
-          void rebuild();
+            void rebuild();
+          })();
         },
       },
       {
@@ -181,6 +183,7 @@ export function setupTray(
         checked: settings.tun,
         click: async (item) => {
           try {
+            // FlClash: authorize → restart core so setuid applies, then enable TUN
             if (item.checked) {
               const auth = await supervisor.authorizeTunBinary();
               if (!auth.ok) {
@@ -189,10 +192,12 @@ export function setupTray(
               }
             }
             const next = updateSettings({ tun: item.checked });
+            // applySettings restarts when tun differs from runtime process state
             await supervisor.applySettings(next);
             getMainWindow()?.webContents.send("settings:changed", next);
+            getMainWindow()?.webContents.send("core:state", supervisor.getState());
           } catch {
-            /* ignore */
+            item.checked = loadSettings().tun;
           }
           void rebuild();
         },
