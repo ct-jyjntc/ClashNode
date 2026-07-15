@@ -36,21 +36,31 @@ function mihomoBinaryName() {
   return "mihomo";
 }
 
-/** Prefer platform-tagged names when present (for multi-arch packs). */
+/**
+ * Prefer platform-tagged names when present (for multi-arch packs).
+ *   mihomo, mihomo.exe
+ *   mihomo-darwin-arm64 / mihomo-darwin-amd64
+ *   mihomo-windows-amd64.exe / mihomo-windows-arm64.exe
+ */
 function mihomoCandidates(baseDir: string) {
   const name = mihomoBinaryName();
-  const arch = process.arch; // arm64 | x64 | ...
-  const plat =
-    process.platform === "darwin"
-      ? "darwin"
-      : process.platform === "win32"
-        ? "windows"
-        : "linux";
+  const arch = process.arch; // arm64 | x64 | ia32 | ...
+  const plat = process.platform === "win32" ? "windows" : "darwin";
+  const archAlias =
+    arch === "x64" ? "amd64" : arch === "ia32" ? "386" : arch;
+  const ext = process.platform === "win32" ? ".exe" : "";
+  // Prefer platform-tagged binaries first — multi-arch packs ship every OS
+  // binary under resources/bin, so plain "mihomo" may be the wrong platform.
   return [
+    path.join(baseDir, `mihomo-${plat}-${arch}${ext}`),
+    path.join(baseDir, `mihomo-${plat}-${archAlias}${ext}`),
+    path.join(baseDir, `mihomo-${plat}-arm64${ext}`),
+    path.join(baseDir, `mihomo-${plat}-amd64${ext}`),
+    path.join(baseDir, `mihomo-${plat}-x64${ext}`),
+    path.join(baseDir, plat, name),
+    path.join(baseDir, plat, `${arch}`, name),
+    path.join(baseDir, plat, `${archAlias}`, name),
     path.join(baseDir, name),
-    path.join(baseDir, `mihomo-${plat}-${arch}${process.platform === "win32" ? ".exe" : ""}`),
-    path.join(baseDir, `mihomo-${plat}-arm64`),
-    path.join(baseDir, `mihomo-${plat}-amd64`),
   ];
 }
 
@@ -82,9 +92,16 @@ function resolveBundledMihomoPath() {
  */
 export function getMihomoPath() {
   const bundled = resolveBundledMihomoPath();
-  if (!app.isPackaged) return bundled;
+  // Dev: use tagged binary if plain name missing
+  if (!app.isPackaged) {
+    if (fs.existsSync(bundled)) return bundled;
+    // still try candidates under resources/bin
+    return bundled;
+  }
   if (!fs.existsSync(bundled)) return bundled;
 
+  // Packaged: copy into userData so we can setuid (unix) / unblock (windows)
+  // without mutating the install tree.
   const workDir = path.join(app.getPath("userData"), "bin");
   ensureDir(workDir);
   const work = path.join(workDir, mihomoBinaryName());
@@ -92,13 +109,17 @@ export function getMihomoPath() {
   try {
     if (fs.existsSync(work)) {
       const st = fs.statSync(work);
-      // Keep an already-elevated setuid binary
+      // Keep an already-elevated setuid binary (macOS)
       if ((st.mode & 0o4000) !== 0) return work;
       const srcMtime = fs.statSync(bundled).mtimeMs;
       if (srcMtime <= st.mtimeMs) return work;
     }
     fs.copyFileSync(bundled, work);
-    fs.chmodSync(work, 0o755);
+    try {
+      fs.chmodSync(work, 0o755);
+    } catch {
+      /* windows may not chmod */
+    }
     return work;
   } catch {
     return bundled;

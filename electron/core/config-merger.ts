@@ -193,9 +193,9 @@ export async function mergeConfig(
   base["tcp-concurrent"] = base["tcp-concurrent"] ?? true;
   base["find-process-mode"] = base["find-process-mode"] ?? "strict";
 
-  // Align with FlClash desktop TUN patch:
-  // device = app name (not utun*), auto-route true, empty route-address,
-  // dns-hijack any:53, stack mixed. mihomo regenerates utunN itself on darwin.
+  // Align with FlClash desktop TUN patch.
+  // - macOS: device name without utun* prefix (mihomo owns utunN)
+  // - Windows: Meta stack + auto-route (Wintun)
   const prevTun =
     (base.tun as Record<string, unknown> | undefined) ??
     ({} as Record<string, unknown>);
@@ -206,10 +206,14 @@ export async function mergeConfig(
     "auto-route": true,
     "auto-detect-interface": true,
     "dns-hijack": prevTun["dns-hijack"] ?? ["any:53"],
-    // FlClash uses appName ("FlClash"); custom "utun*" names are rejected on darwin
     device: "ClashNode",
     "strict-route": prevTun["strict-route"] ?? false,
   };
+  if (process.platform === "win32") {
+    // Help Wintun users; mihomo loads wintun.dll from binary dir when present
+    (base.tun as Record<string, unknown>)["auto-redirect"] =
+      prevTun["auto-redirect"] ?? true;
+  }
   // desktop: clear route-address so mihomo owns full route table via auto-route
   delete (base.tun as Record<string, unknown>)["route-address"];
 

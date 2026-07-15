@@ -1,6 +1,6 @@
 # ClashNode
 
-Quiet multi-platform proxy client powered by **mihomo** (Clash Meta), with a monochrome Quiet Console UI.
+Quiet macOS & Windows proxy client powered by **mihomo** (Clash Meta), with a monochrome Quiet Console UI.
 
 ## Features
 
@@ -10,11 +10,12 @@ Quiet multi-platform proxy client powered by **mihomo** (Clash Meta), with a mon
 - Proxy groups, node selection, delay test, providers
 - Dashboard with customizable widgets + live traffic chart
 - Connections, requests, rules, logs, geo resources
-- System proxy: macOS / Windows / Linux (GNOME)
-- Optional TUN (setuid elevation on macOS; see `docs/TUN-NETWORK-EXTENSION.md`)
+- System proxy: macOS (networksetup) · Windows (WinINet+RAS)
+- Optional TUN: macOS setuid elevation; Windows UAC/admin (see `docs/CROSS-PLATFORM.md`)
 - Ports (mixed / HTTP / SOCKS / redir / tproxy), DNS, on-demand SSID
 - Global hotkeys (press-to-record), theme presets, WebDAV backup
-- Tray menu, in-app updater hooks (`electron-updater`)
+- Tray menu (groups/modes all desktop), in-app updater hooks (`electron-updater`)
+- Deep links `clash://` / `clashnode://` (Win registry · macOS)
 - External controller: `127.0.0.1:9090` + local secret
 
 <img width="1223" height="926" alt="截屏2026-07-15 04 39 42" src="https://github.com/user-attachments/assets/9bc7054a-c4e0-4475-82bd-3ec3fc33859d" />
@@ -32,30 +33,32 @@ Quiet multi-platform proxy client powered by **mihomo** (Clash Meta), with a mon
 ## Requirements
 
 - Node.js 20+
-- Platform-matched mihomo binary under `resources/bin/`:
-  - macOS arm64: `mihomo` or `mihomo-darwin-arm64`
-  - Windows / Linux: place the matching release binary with platform tag
+- mihomo under `resources/bin/` (multi-arch names supported)
+
+```bash
+npm run fetch-mihomo          # download MetaCubeX release binaries
+# produces mihomo-darwin-*, mihomo-windows-*.exe, …
+```
 
 ## Develop
 
 ```bash
 cd ClashNode
 npm install
+npm run fetch-mihomo          # first time / update kernel
 npm run dev
 ```
 
 ## Build / package
 
 ```bash
+npm run icons:platform        # icon.ico for Windows
 npm run build
-npm run pack:mac    # dir
-npm run pack:win
-npm run pack:linux
-npm run dist:mac    # dmg + zip
-npm run dist:win    # nsis + zip
-npm run dist:linux  # AppImage + deb
+npm run dist:mac              # dmg (arm64 + x64)
+npm run dist:win              # nsis + zip (x64 + arm64)
 ```
 
+Cross-platform notes: `docs/CROSS-PLATFORM.md`.  
 Set GitHub `publish` in `package.json` for auto-update releases.
 
 ## Data directory
@@ -64,7 +67,6 @@ Set GitHub `publish` in `package.json` for auto-update releases.
 |----|------|
 | macOS | `~/Library/Application Support/clashnode/` |
 | Windows | `%APPDATA%/clashnode/` |
-| Linux | `~/.config/clashnode/` |
 
 ```
 config.yaml

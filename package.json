@@ -2,21 +2,21 @@
   "name": "clashnode",
   "version": "0.1.0",
   "private": true,
-  "description": "A quiet multi-platform proxy client powered by mihomo",
+  "description": "A quiet proxy client for macOS and Windows, powered by mihomo",
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
+    "fetch-mihomo": "bash scripts/fetch-mihomo.sh",
+    "icons:platform": "bash scripts/prepare-platform-icons.sh",
     "pack": "npm run build && electron-builder --dir",
     "pack:mac": "npm run build && electron-builder --mac --dir",
     "pack:win": "npm run build && electron-builder --win --dir",
-    "pack:linux": "npm run build && electron-builder --linux --dir",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:linux": "npm run build && electron-builder --linux"
+    "dist:win": "npm run build && electron-builder --win --x64 --arm64"
   },
   "build": {
     "appId": "com.clashnode.app",
@@ -42,6 +42,21 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/icons",
+        "to": "icons",
+        "filter": [
+          "icon.icns",
+          "icon.ico",
+          "icon.png",
+          "icon-light.png",
+          "icon-dark.png",
+          "dock-light.png",
+          "dock-dark.png",
+          "icon-256.png",
+          "icon-512.png"
+        ]
       }
     ],
     "publish": [
@@ -53,12 +68,14 @@
       }
     ],
     "mac": {
+      "icon": "resources/icons/icon.icns",
       "category": "public.app-category.utilities",
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "arm64"
+            "arm64",
+            "x64"
           ]
         }
       ],
@@ -70,26 +87,37 @@
         "NSLocalNetworkUsageDescription": "Connect to the local mihomo controller"
       }
     },
+    "win": {
+      "icon": "resources/icons/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
     "dmg": {
       "title": "ClashNode",
       "writeUpdateInfo": false
     },
-    "win": {
-      "target": [
-        "nsis",
-        "zip"
-      ]
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "category": "Network"
-    },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ClashNode"
     }
   },
   "dependencies": {
@@ -135,5 +163,10 @@
     "vite": "^7.0.2",
     "vite-plugin-electron": "^0.29.0",
     "vite-plugin-electron-renderer": "^0.14.6"
-  }
+  },
+  "author": {
+    "name": "ClashNode",
+    "email": "clashnode@users.noreply.github.com"
+  },
+  "desktopName": "clashnode"
 }

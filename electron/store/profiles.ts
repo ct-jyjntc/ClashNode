@@ -17,8 +17,11 @@ const EMPTY: ProfilesState = { currentId: null, items: [] };
  * - generic / ClashX / CFW → rules-only shell with proxies: []
  * Match FlClash's request UA style.
  */
-const SUBSCRIPTION_UA =
-  "clash.meta/v1.19.28 FlClash/v0.8.94 clash-verge Platform/darwin";
+function subscriptionUa() {
+  const plat = process.platform === "win32" ? "windows" : "darwin";
+  // Match FlClash-style UA so providers return full proxy lists
+  return `clash.meta/v1.19.28 FlClash/v0.8.94 clash-verge Platform/${plat}`;
+}
 
 export function loadProfilesState(): ProfilesState {
   const state = readJsonFile<ProfilesState>(getProfilesStatePath(), EMPTY);
@@ -73,7 +76,7 @@ function filenameFromDisposition(header?: string | null): string | undefined {
 async function downloadSubscription(url: string) {
   const res = await fetch(url, {
     headers: {
-      "User-Agent": SUBSCRIPTION_UA,
+      "User-Agent": subscriptionUa(),
       Accept: "text/yaml, text/plain, */*",
     },
     redirect: "follow",

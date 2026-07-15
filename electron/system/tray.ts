@@ -7,17 +7,20 @@ import {
   nativeImage,
   type NativeImage,
 } from "electron";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CoreSupervisor } from "../core/supervisor";
 import { loadSettings, updateSettings } from "../store/settings";
 import { disableSystemProxy, enableSystemProxy } from "./proxy";
 
 /**
- * macOS menu bar tray (FlClash menu order + live speed).
- *
- * Electron `tray.setTitle` only paints one line (multi-line falls outside the
- * bar). FlClash/Surge draw multi-line speed natively — we match that by
- * compositing a circle + two speed lines into a single template image.
+ * Desktop tray (FlClash menu order).
+ * - macOS: painted circle + optional two-line speed (template image)
+ * - Windows: status_1/2/3 icons (stopped / running / running+TUN)
  */
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let tray: Tray | null = null;
 let lastUp = 0;
@@ -27,6 +30,65 @@ let rebuildFn: (() => Promise<void>) | null = null;
 let paintTimer: NodeJS.Timeout | null = null;
 let lastPaintKey = "";
 let lastIconOnlyKey = "";
+let trayHandlers: {
+  supervisor: CoreSupervisor;
+  getMainWindow: () => BrowserWindow | null;
+  onQuit: () => void;
+} | null = null;
+
+function trayResourceDir() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "tray");
+  }
+  const candidates = [
+    path.join(process.cwd(), "resources", "tray"),
+    path.join(app.getAppPath(), "resources", "tray"),
+    path.join(__dirname, "../../resources/tray"),
+  ];
+  for (const d of candidates) {
+    if (fs.existsSync(d)) return d;
+  }
+  return candidates[0];
+}
+
+/** FlClash: mac status_1 always for template; Windows varies by start/tun. */
+function statusIconPath(running: boolean, tun: boolean) {
+  const dir = trayResourceDir();
+  let name = "status_1";
+  if (process.platform === "win32") {
+    if (!running) name = "status_1";
+    else if (!tun) name = "status_2";
+    else name = "status_3";
+    const ico = path.join(dir, `${name}.ico`);
+    if (fs.existsSync(ico)) return ico;
+  }
+  const p32 = path.join(dir, `${name}_32.png`);
+  if (fs.existsSync(p32)) return p32;
+  return path.join(dir, `${name}.png`);
+}
+
+function loadStatusIcon(running: boolean, tun: boolean): NativeImage {
+  const p = statusIconPath(running, tun);
+  if (fs.existsSync(p)) {
+    let img = nativeImage.createFromPath(p);
+    const size = img.getSize();
+    if (size.width > 32 || size.height > 32) {
+      img = img.resize({ width: 24, height: 24, quality: "best" });
+    }
+    if (process.platform === "darwin") {
+      img.setTemplateImage(true);
+    }
+    return img;
+  }
+  // Fallback: painted circle only
+  return buildTrayImage({
+    running,
+    tun,
+    showSpeed: false,
+    up: 0,
+    down: 0,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Speed formatting (FlClash shortTraffic)
@@ -310,23 +372,25 @@ function applyTrayVisual(running: boolean, tun: boolean) {
   lastIconOnlyKey = `${running ? 1 : 0}:${tun ? 1 : 0}`;
 
   try {
-    tray.setImage(
-      buildTrayImage({
-        running,
-        tun,
-        showSpeed,
-        up: lastUp,
-        down: lastDown,
-      }),
-    );
-    // Always clear title — speed is painted into the image (FlClash-like layout)
     if (process.platform === "darwin") {
+      tray.setImage(
+        buildTrayImage({
+          running,
+          tun,
+          showSpeed,
+          up: lastUp,
+          down: lastDown,
+        }),
+      );
       tray.setTitle("");
+    } else {
+      tray.setImage(loadStatusIcon(running, tun));
     }
   } catch {
     /* ignore */
   }
 }
+
 
 export function setTrayTraffic(up: number, down: number) {
   lastUp = up;
@@ -355,11 +419,21 @@ export function scheduleTrayRebuild() {
 }
 
 function copyEnvVar(port: number) {
-  const url = `http://127.0.0.1:${port}`;
-  const text =
-    process.platform === "win32"
-      ? `set all_proxy=${url}`
-      : `export all_proxy=${url}`;
+  // FlClash-style: export both http(s) and all_proxy / Windows set
+  const host = "127.0.0.1";
+  if (process.platform === "win32") {
+    const text = [
+      `set http_proxy=http://${host}:${port}`,
+      `set https_proxy=http://${host}:${port}`,
+      `set all_proxy=socks5://${host}:${port}`,
+    ].join("\r\n");
+    clipboard.writeText(text);
+    return;
+  }
+  const text = [
+    `export https_proxy=http://${host}:${port} http_proxy=http://${host}:${port} all_proxy=socks5://${host}:${port}`,
+    `export HTTPS_PROXY=http://${host}:${port} HTTP_PROXY=http://${host}:${port} ALL_PROXY=socks5://${host}:${port}`,
+  ].join("\n");
   clipboard.writeText(text);
 }
 
@@ -370,24 +444,28 @@ export function setupTray(
 ) {
   if (tray) return tray;
 
+  trayHandlers = { supervisor, getMainWindow, onQuit };
   const settings0 = loadSettings();
   const state0 = supervisor.getState();
   lastPaintKey = "";
   lastIconOnlyKey = "";
-  tray = new Tray(
-    buildTrayImage({
-      running: state0.status === "running",
-      tun: settings0.tun,
-      showSpeed: process.platform === "darwin" && settings0.showTrayTitle !== false,
-      up: 0,
-      down: 0,
-    }),
-  );
-  lastIconOnlyKey = `${state0.status === "running" ? 1 : 0}:${settings0.tun ? 1 : 0}`;
-  tray.setToolTip("ClashNode");
+  const running0 = state0.status === "running";
   if (process.platform === "darwin") {
+    tray = new Tray(
+      buildTrayImage({
+        running: running0,
+        tun: settings0.tun,
+        showSpeed: settings0.showTrayTitle !== false,
+        up: 0,
+        down: 0,
+      }),
+    );
     tray.setTitle("");
+  } else {
+    tray = new Tray(loadStatusIcon(running0, settings0.tun));
   }
+  lastIconOnlyKey = `${running0 ? 1 : 0}:${settings0.tun ? 1 : 0}`;
+  tray.setToolTip("ClashNode");
 
   const rebuild = async () => {
     if (!tray) return;
@@ -397,9 +475,9 @@ export function setupTray(
 
     applyTrayVisual(running, settings.tun);
 
-    // macOS: each group as top-level submenu (FlClash); limit size for UI
+    // Desktop: each group as top-level submenu (FlClash); limit size for UI
     const groupItems: Electron.MenuItemConstructorOptions[] = [];
-    if (running && process.platform === "darwin") {
+    if (running) {
       try {
         const proxies = await supervisor.getApi().proxies();
         const groups = Object.values(proxies.proxies || {}).filter(
@@ -665,8 +743,13 @@ export function destroyTray() {
   rebuildTimer = null;
   paintTimer = null;
   rebuildFn = null;
+  trayHandlers = null;
   lastPaintKey = "";
   lastIconOnlyKey = "";
-  tray?.destroy();
+  try {
+    tray?.destroy();
+  } catch {
+    /* ignore */
+  }
   tray = null;
 }

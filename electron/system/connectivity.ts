@@ -17,10 +17,6 @@ async function getWifiSsid(): Promise<string | null> {
       const m = /Current Wi-Fi Network:\s*(.+)$/m.exec(stdout.trim());
       return m?.[1]?.trim() || null;
     }
-    if (process.platform === "linux") {
-      const { stdout } = await execFileAsync("iwgetid", ["-r"]);
-      return stdout.trim() || null;
-    }
     if (process.platform === "win32") {
       const { stdout } = await execFileAsync("netsh", [
         "wlan",

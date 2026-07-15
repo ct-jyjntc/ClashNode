@@ -15,6 +15,11 @@ import {
   ensureDir,
 } from "../store/paths";
 import { loadProfilesState, readProfileYaml } from "../store/profiles";
+import {
+  authorizeWindowsTun,
+  isTunMarkedElevated,
+  isWindowsAdmin,
+} from "../system/elevate";
 
 export class CoreSupervisor extends EventEmitter {
   private process: ChildProcess | null = null;
@@ -173,6 +178,7 @@ export class CoreSupervisor extends EventEmitter {
       cwd: home,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     this.process = child;
     this.runtimeTun = !!settings.tun;
@@ -330,23 +336,35 @@ export class CoreSupervisor extends EventEmitter {
     return this.api;
   }
 
-  /** FlClash: stat -f '%Su:%Sg %Sp' → root:admin + rws */
+  /**
+   * TUN privilege check.
+   * - macOS: root-owned + setuid bit on mihomo binary (FlClash)
+   * - Windows: admin process OR elevated flag after UAC prep
+   */
   async checkTunAuthorized(): Promise<boolean> {
-    if (process.platform !== "darwin") return true;
     const binary = getMihomoPath();
     if (!fs.existsSync(binary)) return false;
-    try {
-      const st = fs.statSync(binary);
-      // setuid bit + owned by root
-      return st.uid === 0 && (st.mode & 0o4000) !== 0;
-    } catch {
-      return false;
+
+    if (process.platform === "win32") {
+      if (await isWindowsAdmin()) return true;
+      return isTunMarkedElevated();
     }
+
+    if (process.platform === "darwin") {
+      try {
+        const st = fs.statSync(binary);
+        return st.uid === 0 && (st.mode & 0o4000) !== 0;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   /**
-   * FlClash authorizeCore: chown root:admin + chmod +sx via osascript.
-   * Caller must restart the core process after success so setuid applies.
+   * Elevate mihomo for TUN. Caller must restart core after success.
+   * - macOS: osascript chown root:admin + chmod +sx
+   * - Windows: UAC prep script + firewall allow (Wintun still prefers admin)
    */
   authorizeTunBinary(): Promise<{ ok: boolean; message: string }> {
     return (async () => {
@@ -357,24 +375,36 @@ export class CoreSupervisor extends EventEmitter {
       if (!fs.existsSync(binary)) {
         return { ok: false, message: `mihomo not found: ${binary}` };
       }
-      const script = `do shell script "chown root:admin ${shellEscape(binary)} && chmod +sx ${shellEscape(binary)}" with administrator privileges`;
-      return await new Promise<{ ok: boolean; message: string }>((resolve) => {
-        const child = spawn("osascript", ["-e", script]);
-        let err = "";
-        child.stderr.on("data", (b) => {
-          err += b.toString();
+
+      if (process.platform === "darwin") {
+        const script = `do shell script "chown root:admin ${shellEscape(binary)} && chmod +sx ${shellEscape(binary)}" with administrator privileges`;
+        return await new Promise<{ ok: boolean; message: string }>((resolve) => {
+          const child = spawn("osascript", ["-e", script]);
+          let err = "";
+          child.stderr.on("data", (b) => {
+            err += b.toString();
+          });
+          child.on("close", (code) => {
+            if (code === 0) {
+              resolve({ ok: true, message: "Privileges granted" });
+            } else {
+              resolve({
+                ok: false,
+                message: err.trim() || "Authorization cancelled or failed",
+              });
+            }
+          });
         });
-        child.on("close", (code) => {
-          if (code === 0) {
-            resolve({ ok: true, message: "Privileges granted" });
-          } else {
-            resolve({
-              ok: false,
-              message: err.trim() || "Authorization cancelled or failed",
-            });
-          }
-        });
-      });
+      }
+
+      if (process.platform === "win32") {
+        return authorizeWindowsTun(binary);
+      }
+
+      return {
+        ok: false,
+        message: `TUN authorize unsupported on ${process.platform}`,
+      };
     })();
   }
 }

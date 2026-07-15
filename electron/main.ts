@@ -4,6 +4,8 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  nativeImage,
+  nativeTheme,
   shell,
 } from "electron";
 import fs from "node:fs";
@@ -74,6 +76,8 @@ import {
   quitAndInstallUpdate,
   setupAutoUpdater,
 } from "./system/updater";
+import { applyLoginItem } from "./system/autolaunch";
+import { registerDefaultProtocols } from "./system/protocol";
 import type {
   AppSettings,
   CustomProxyGroup,
@@ -142,7 +146,75 @@ app.on("open-url", (event, url) => {
   void handleDeepLink(url);
 });
 
+/** Resolve packaged / dev path for icon assets. */
+function iconAssetPath(...parts: string[]) {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "icons", ...parts);
+  }
+  const candidates = [
+    path.join(process.cwd(), "resources", "icons", ...parts),
+    path.join(app.getAppPath(), "resources", "icons", ...parts),
+    path.join(__dirname, "../../resources/icons", ...parts),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+/**
+ * Appearance-aware Dock icon.
+ *
+ * Grid matches FlClash AppIcon.appiconset: 1024 canvas, ~82% rounded plate,
+ * transparent outer margin (mid-edge alpha = 0). See scripts/generate-icons.sh.
+ * Packaged `.icns` is the same art; setDockIcon swaps light/dark PNGs because
+ * Electron cannot ship dual-appearance `.icns` / Icon Composer `.icon`.
+ */
+function applyAppIconForTheme(dark?: boolean) {
+  const isDark = dark ?? nativeTheme.shouldUseDarkColors;
+  const dockName = isDark ? "dock-dark.png" : "dock-light.png";
+  const fallbacks = [
+    iconAssetPath(dockName),
+    iconAssetPath(isDark ? "icon-dark.png" : "icon-light.png"),
+    // Packaged default (single appearance) when theme-specific PNGs missing
+    iconAssetPath("icon.icns"),
+    iconAssetPath("icon.png"),
+  ];
+  let img: Electron.NativeImage | null = null;
+  for (const p of fallbacks) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const next = nativeImage.createFromPath(p);
+      if (!next.isEmpty()) {
+        img = next;
+        break;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  if (!img) return;
+
+  if (process.platform === "darwin") {
+    try {
+      app.dock?.setIcon(img);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.setIcon(img);
+    } catch {
+      /* ignore on macOS without setIcon */
+    }
+  }
+}
+
 function createWindow() {
+  const isDark = nativeTheme.shouldUseDarkColors;
+  const windowIcon =
+    iconAssetPath(isDark ? "dock-dark.png" : "dock-light.png");
   mainWindow = new BrowserWindow({
     width: 1111,
     height: 750,
@@ -152,7 +224,8 @@ function createWindow() {
     // Custom traffic lights; CSS -webkit-app-region:drag on top safe area
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 12 },
-    backgroundColor: "#fafafa",
+    backgroundColor: isDark ? "#0f0f0f" : "#fafafa",
+    icon: fs.existsSync(windowIcon) ? windowIcon : undefined,
     show: false,
     webPreferences: {
       // Built as CJS so require("electron") works in the preload sandbox
@@ -162,6 +235,8 @@ function createWindow() {
       sandbox: false,
     },
   });
+
+  applyAppIconForTheme(isDark);
 
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
@@ -331,17 +406,6 @@ function applyHotkeysFromSettings(settings = loadSettings()) {
     stopTraffic: stopTrafficPoll,
     broadcastState,
   });
-}
-
-function applyLoginItem(enabled: boolean) {
-  try {
-    app.setLoginItemSettings({
-      openAtLogin: enabled,
-      openAsHidden: true,
-    });
-  } catch {
-    /* ignore on unsupported platforms */
-  }
 }
 
 let profileUpdateTimer: NodeJS.Timeout | null = null;
@@ -994,13 +1058,17 @@ async function gracefulQuit() {
 
 app.whenReady().then(async () => {
   try {
-    app.setAsDefaultProtocolClient("clash");
-    app.setAsDefaultProtocolClient("clashnode");
+    registerDefaultProtocols();
   } catch {
     /* ignore when unpackaged */
   }
 
   registerIpc();
+  // Dock / window icons follow macOS light & dark appearance
+  applyAppIconForTheme();
+  nativeTheme.on("updated", () => {
+    applyAppIconForTheme(nativeTheme.shouldUseDarkColors);
+  });
   createWindow();
   setupTray(supervisor, () => mainWindow, () => void gracefulQuit());
   setupAutoUpdater(() => mainWindow);
