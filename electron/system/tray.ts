@@ -15,9 +15,9 @@ import { loadSettings, updateSettings } from "../store/settings";
 import { disableSystemProxy, enableSystemProxy } from "./proxy";
 
 /**
- * Desktop tray (FlClash menu order).
+ * Desktop tray (FlClash menu order, ClashNode branding).
  * - macOS: painted circle + optional two-line speed (template image)
- * - Windows: status_1/2/3 icons (stopped / running / running+TUN)
+ * - Windows: ClashNode app icon (not FlClash status_1/2/3)
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,40 +36,92 @@ let trayHandlers: {
   onQuit: () => void;
 } | null = null;
 
-function trayResourceDir() {
+function resourceSubdir(...parts: string[]) {
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, "tray");
+    return path.join(process.resourcesPath, ...parts);
   }
-  const candidates = [
-    path.join(process.cwd(), "resources", "tray"),
-    path.join(app.getAppPath(), "resources", "tray"),
-    path.join(__dirname, "../../resources/tray"),
+  const bases = [
+    path.join(process.cwd(), "resources"),
+    path.join(app.getAppPath(), "resources"),
+    path.join(__dirname, "../../resources"),
   ];
-  for (const d of candidates) {
-    if (fs.existsSync(d)) return d;
+  for (const b of bases) {
+    const d = path.join(b, ...parts);
+    if (fs.existsSync(d) || fs.existsSync(path.dirname(d))) {
+      // Prefer a base that actually contains the requested file/dir
+      if (fs.existsSync(d)) return d;
+    }
   }
-  return candidates[0];
+  return path.join(bases[0], ...parts);
 }
 
-/** FlClash: mac status_1 always for template; Windows varies by start/tun. */
-function statusIconPath(running: boolean, tun: boolean) {
-  const dir = trayResourceDir();
-  let name = "status_1";
-  if (process.platform === "win32") {
-    if (!running) name = "status_1";
-    else if (!tun) name = "status_2";
-    else name = "status_3";
-    const ico = path.join(dir, `${name}.ico`);
-    if (fs.existsSync(ico)) return ico;
+function trayResourceDir() {
+  return resourceSubdir("tray");
+}
+
+function iconsResourceDir() {
+  return resourceSubdir("icons");
+}
+
+/**
+ * Windows tray: always use ClashNode brand icon.
+ * Prefer multi-size .ico, then small PNGs (taskbar looks best at ~16–32px).
+ */
+function windowsTrayIconPath(): string | null {
+  const icons = iconsResourceDir();
+  const candidates = [
+    path.join(icons, "icon.ico"),
+    path.join(icons, "icon-32.png"),
+    path.join(icons, "icon-16.png"),
+    path.join(icons, "app_icon_32.png"),
+    path.join(icons, "app_icon_16.png"),
+    path.join(icons, "icon.png"),
+    // last resort: packaged product icon next to exe (dev rarely has this)
+    path.join(process.resourcesPath || "", "icon.ico"),
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
   }
-  const p32 = path.join(dir, `${name}_32.png`);
+  return null;
+}
+
+/** macOS fallback asset path (template circles still preferred via buildTrayImage). */
+function macStatusIconPath() {
+  const dir = trayResourceDir();
+  const p32 = path.join(dir, "status_1_32.png");
   if (fs.existsSync(p32)) return p32;
-  return path.join(dir, `${name}.png`);
+  return path.join(dir, "status_1.png");
 }
 
 function loadStatusIcon(running: boolean, tun: boolean): NativeImage {
-  const p = statusIconPath(running, tun);
-  if (fs.existsSync(p)) {
+  // Windows notification area: ClashNode product icon only
+  if (process.platform === "win32") {
+    const p = windowsTrayIconPath();
+    if (p) {
+      try {
+        let img = nativeImage.createFromPath(p);
+        if (!img.isEmpty()) {
+          const size = img.getSize();
+          // Taskbar tray is ~16px logical; keep a crisp size
+          if (size.width > 32 || size.height > 32) {
+            img = img.resize({ width: 16, height: 16, quality: "best" });
+          } else if (size.width > 16 || size.height > 16) {
+            img = img.resize({ width: 16, height: 16, quality: "best" });
+          }
+          return img;
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+  }
+
+  // macOS / fallback path assets
+  const p =
+    process.platform === "darwin"
+      ? macStatusIconPath()
+      : windowsTrayIconPath() || macStatusIconPath();
+  if (p && fs.existsSync(p)) {
     let img = nativeImage.createFromPath(p);
     const size = img.getSize();
     if (size.width > 32 || size.height > 32) {
@@ -359,13 +411,18 @@ function applyTrayVisual(running: boolean, tun: boolean) {
     process.platform === "darwin" && !!settings.showTrayTitle;
 
   const lines = showSpeed ? speedLines(lastUp, lastDown) : { up: "", down: "" };
-  const key = [
-    running ? 1 : 0,
-    tun ? 1 : 0,
-    showSpeed ? 1 : 0,
-    lines.up,
-    lines.down,
-  ].join("|");
+  // Windows brand icon does not change with running/tun (state is in menu/tooltip).
+  // Still track running/tun for tooltip rebuilds and mac paint keys.
+  const key =
+    process.platform === "win32"
+      ? "win-brand"
+      : [
+          running ? 1 : 0,
+          tun ? 1 : 0,
+          showSpeed ? 1 : 0,
+          lines.up,
+          lines.down,
+        ].join("|");
 
   if (key === lastPaintKey) return;
   lastPaintKey = key;
