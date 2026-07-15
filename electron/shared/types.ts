@@ -387,15 +387,40 @@ export const GEO_FILES = [
   "country.mmdb",
 ] as const;
 
+/** Primary URLs (jsDelivr is faster/more reachable than GitHub releases in CN). */
 export const GEO_DOWNLOADS: Record<string, string> = {
   "geoip.metadb":
-    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
   "GeoIP.dat":
-    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
   "GeoSite.dat":
-    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
   "ASN.mmdb":
-    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb",
   "country.mmdb":
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
+};
+
+/** Fallback mirrors tried in order when primary fails. */
+export const GEO_DOWNLOAD_MIRRORS: Record<string, string[]> = {
+  "geoip.metadb": [
+    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+  ],
+  "GeoIP.dat": [
+    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+  ],
+  "GeoSite.dat": [
+    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+  ],
+  "ASN.mmdb": [
+    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb",
+    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
+  ],
+  "country.mmdb": [
+    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
     "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
+  ],
 };

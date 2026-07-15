@@ -28,10 +28,22 @@ import { useI18n } from "@/shared/i18n";
 
 const STORAGE_KEY = "clashnode.sidebarCollapsed";
 
-/** Top inset for traffic lights + window drag (no visible bar). */
+/** Top inset for traffic lights / caption bar + window drag (no visible bar). */
 const TOP_SAFE = 40;
-/** macOS traffic lights occupy ~0–70px; controls start after that. */
-const LIGHTS_PAD = 78;
+/** macOS traffic lights occupy ~0–70px; Windows has no left chrome — flush left. */
+const LIGHTS_PAD_MAC = 78;
+const LIGHTS_PAD_WIN = 12;
+
+function detectIsMac() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const plat =
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (navigator as any).userAgentData?.platform ||
+    navigator.platform ||
+    "";
+  return /mac/i.test(plat) || /Mac OS X|Macintosh/i.test(ua);
+}
 
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(() => {
@@ -41,6 +53,7 @@ export function AppShell() {
       return false;
     }
   });
+  const [isMac] = useState(detectIsMac);
   const core = useAppStore((s) => s.core);
   const location = useLocation();
   const { t } = useI18n();
@@ -49,7 +62,12 @@ export function AppShell() {
     localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
+  // macOS: reserve space for traffic lights; Windows/Linux: sit near the left edge
+  const lightsPad = isMac ? LIGHTS_PAD_MAC : LIGHTS_PAD_WIN;
   const width = collapsed ? 68 : 200;
+  // Toggle (~28) + gap + "ClashNode" title — always shown (even when rail is collapsed)
+  const titleClusterW = 28 + 6 + 88; // icon button + gap + label
+  const headerClusterW = lightsPad + titleClusterW;
   const running = core?.status === "running";
 
   const nav = [
@@ -95,6 +113,8 @@ export function AppShell() {
         >
           {/*
             Top row: no-drag control cluster (real hit target) + drag remainder.
+            Title always stays visible — when collapsed the cluster may extend
+            past the 68px rail (aside overflow: visible).
             Never put drag on a parent that wraps the toggle button.
           */}
           <div
@@ -102,21 +122,19 @@ export function AppShell() {
             style={{ height: TOP_SAFE }}
           >
             <div
-              className="titlebar-no-drag flex h-full shrink-0 items-center gap-1"
+              className="titlebar-no-drag flex h-full shrink-0 items-center gap-1.5"
               style={{
-                // When collapsed, extend past rail so button stays after lights
-                paddingLeft: LIGHTS_PAD,
-                minWidth: LIGHTS_PAD + 36,
+                // macOS: pad past traffic lights; Windows: small inset from edge
+                paddingLeft: lightsPad,
+                minWidth: headerClusterW,
               }}
             >
               {toggleBtn}
-              {!collapsed ? (
-                <div className="flex min-w-0 items-center pr-2">
-                  <span className="truncate text-sm font-semibold">
-                    {t.appName}
-                  </span>
-                </div>
-              ) : null}
+              <div className="flex min-w-0 items-center pr-2">
+                <span className="truncate text-sm font-semibold tracking-tight">
+                  {t.appName}
+                </span>
+              </div>
             </div>
             {!collapsed ? (
               <div className="titlebar-drag h-full min-w-0 flex-1" />
@@ -197,7 +215,8 @@ export function AppShell() {
         >
           {/*
             Content top drag across the full width (including top-right).
-            Left hole only when collapsed so the expand control stays clickable.
+            When collapsed, punch a no-drag hole for the overflow title cluster
+            (toggle + ClashNode) so it stays clickable / not under drag.
             Toast close buttons stay clickable via CSS no-drag on [data-sonner-*]
             and toaster offset below this strip — no permanent right dead zone.
           */}
@@ -206,10 +225,10 @@ export function AppShell() {
             style={{ height: TOP_SAFE }}
             aria-hidden
           >
-            {collapsed ? (
+            {collapsed && headerClusterW > width ? (
               <div
                 className="titlebar-no-drag h-full shrink-0"
-                style={{ width: LIGHTS_PAD + 36 - width }}
+                style={{ width: headerClusterW - width }}
               />
             ) : null}
             <div className="titlebar-drag h-full min-w-0 flex-1" />

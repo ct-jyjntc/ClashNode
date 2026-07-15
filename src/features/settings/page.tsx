@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Save,
   Shield,
+  AppWindow,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { PageHeader } from "@/shared/components/page-header";
@@ -489,6 +490,16 @@ export function SettingsPage() {
       const res = await getApi().authorizeTun();
       if (res.ok) toast.success(t.settings.authorizeTunOk);
       else toast.error(res.message || t.settings.authorizeTunFail);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function enableLoopback() {
+    try {
+      const res = await getApi().enableLoopback();
+      if (res.ok) toast.success(t.settings.enableLoopbackOk);
+      else toast.error(res.message || t.settings.enableLoopbackFail);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
@@ -1046,6 +1057,29 @@ export function SettingsPage() {
               Auth
             </Button>
           </div>
+          {version?.platform === "win32" ||
+          (typeof navigator !== "undefined" &&
+            /windows/i.test(navigator.userAgent)) ? (
+            <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-xs">
+                  <AppWindow className="size-3.5" strokeWidth={1.8} />
+                  {t.settings.enableLoopback}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  {t.settings.enableLoopbackHint}
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="shrink-0 text-muted-foreground"
+                onClick={() => void enableLoopback()}
+              >
+                Open
+              </Button>
+            </div>
+          ) : null}
           <div className="space-y-2">
             <Label>{t.settings.apiEndpoint}</Label>
             <div className="flex gap-2">

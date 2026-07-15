@@ -308,9 +308,14 @@ const zh = {
     copyEndpoint: "复制地址",
     authorizeTun: "重新授权 TUN",
     authorizeTunHint:
-      "macOS：为 mihomo 设置 setuid；Windows：UAC 提权准备 Wintun（首次可能需以管理员运行）",
+      "macOS：为 mihomo 设置 setuid；Windows：安装 ClashNodeHelperService 并以高权限拉起内核（含 Wintun）",
     authorizeTunOk: "TUN 权限已授予",
     authorizeTunFail: "授权失败",
+    enableLoopback: "UWP 回环豁免",
+    enableLoopbackHint:
+      "允许微软商店 / UWP 应用走 127.0.0.1 系统代理（EnableLoopback）",
+    enableLoopbackOk: "已打开 EnableLoopback",
+    enableLoopbackFail: "无法打开 EnableLoopback",
     version: "版本信息",
     bypass: "系统代理绕过",
     bypassHint: "每行一个域名或 IP；走直连不经过系统代理",
@@ -705,9 +710,14 @@ const en: Dict = {
     copyEndpoint: "Copy endpoint",
     authorizeTun: "Re-authorize TUN",
     authorizeTunHint:
-      "macOS: setuid on mihomo; Windows: UAC prep for Wintun (may need Run as administrator once)",
+      "macOS: setuid on mihomo; Windows: install ClashNodeHelperService to run the core elevated (Wintun)",
     authorizeTunOk: "TUN privileges granted",
     authorizeTunFail: "Authorization failed",
+    enableLoopback: "UWP loopback exemption",
+    enableLoopbackHint:
+      "Allow Store/UWP apps to use 127.0.0.1 system proxy (EnableLoopback)",
+    enableLoopbackOk: "EnableLoopback opened",
+    enableLoopbackFail: "Failed to open EnableLoopback",
     version: "Versions",
     bypass: "System proxy bypass",
     bypassHint: "One domain or IP per line; traffic goes direct",

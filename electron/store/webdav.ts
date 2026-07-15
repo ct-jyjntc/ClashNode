@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { WebDavSettings } from "../shared/types";
+import { zipDirectory, unzipToDirectory } from "./archive";
 import { getHomeDir } from "./paths";
 
 function remoteBase(settings: WebDavSettings) {
@@ -18,14 +19,20 @@ function curlAuth(settings: WebDavSettings) {
 function run(cmd: string, args: string[], cwd?: string) {
   return new Promise<{ code: number; stdout: string; stderr: string }>(
     (resolve) => {
-      const child = spawn(cmd, args, cwd ? { cwd } : undefined);
+      const child = spawn(cmd, args, {
+        cwd,
+        windowsHide: true,
+      });
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (b) => {
+      child.stdout?.on("data", (b) => {
         stdout += b.toString();
       });
-      child.stderr.on("data", (b) => {
+      child.stderr?.on("data", (b) => {
         stderr += b.toString();
+      });
+      child.on("error", (e) => {
+        resolve({ code: 1, stdout, stderr: e.message });
       });
       child.on("close", (code) => {
         resolve({ code: code ?? 1, stdout, stderr });
@@ -38,8 +45,7 @@ export async function webdavUploadBackup(settings: WebDavSettings) {
   if (!settings.url) throw new Error("WebDAV URL is empty");
   const home = getHomeDir();
   const tmp = path.join(os.tmpdir(), `clashnode-webdav-${Date.now()}.zip`);
-  const z = await run("zip", ["-r", tmp, "."], home);
-  if (z.code !== 0) throw new Error(z.stderr || `zip failed: ${z.code}`);
+  await zipDirectory(home, tmp);
 
   const remoteDir = remoteBase(settings);
   const remote = `${remoteDir}/clashnode-backup.zip`;
@@ -82,13 +88,12 @@ export async function webdavDownloadBackup(settings: WebDavSettings) {
     throw new Error(dl.stderr || "WebDAV download failed");
   }
   const home = getHomeDir();
-  const uz = await run("unzip", ["-o", tmp, "-d", home]);
+  await unzipToDirectory(tmp, home);
   try {
     fs.unlinkSync(tmp);
   } catch {
     /* ignore */
   }
-  if (uz.code !== 0) throw new Error(uz.stderr || `unzip failed: ${uz.code}`);
   return true;
 }
 

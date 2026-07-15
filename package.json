@@ -9,14 +9,19 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
-    "fetch-mihomo": "bash scripts/fetch-mihomo.sh",
-    "icons:platform": "bash scripts/prepare-platform-icons.sh",
+    "bash": "node scripts/run-bash.cjs",
+    "fetch-mihomo": "node scripts/run-bash.cjs scripts/fetch-mihomo.sh",
+    "fetch-wintun": "node scripts/run-bash.cjs scripts/fetch-wintun.sh",
+    "build:helper": "node scripts/run-bash.cjs scripts/build-helper.sh",
+    "build:helper:dev": "node scripts/run-bash.cjs scripts/build-helper.sh --dev",
+    "prepare:win": "node scripts/run-bash.cjs scripts/fetch-wintun.sh && node scripts/run-bash.cjs scripts/build-helper.sh",
+    "icons:platform": "node scripts/run-bash.cjs scripts/prepare-platform-icons.sh",
     "pack": "npm run build && electron-builder --dir",
     "pack:mac": "npm run build && electron-builder --mac --dir",
-    "pack:win": "npm run build && electron-builder --win --dir",
+    "pack:win": "npm run prepare:win && npm run build && electron-builder --win --dir",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win --x64 --arm64"
+    "dist:win": "npm run prepare:win && npm run build && electron-builder --win --x64 --arm64"
   },
   "build": {
     "appId": "com.clashnode.app",
@@ -117,7 +122,9 @@
       "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "ClashNode"
+      "shortcutName": "ClashNode",
+      "include": "scripts/nsis-hooks.nsh",
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {

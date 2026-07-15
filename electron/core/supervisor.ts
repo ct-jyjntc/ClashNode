@@ -13,16 +13,35 @@ import {
   getMihomoPath,
   getSecretPath,
   ensureDir,
+  ensureWintunBesideMihomo,
 } from "../store/paths";
 import { loadProfilesState, readProfileYaml } from "../store/profiles";
+import { ensureCriticalGeo } from "../store/geo";
 import {
   authorizeWindowsTun,
   isTunMarkedElevated,
   isWindowsAdmin,
+  markTunElevated,
 } from "../system/elevate";
+import {
+  checkHelperService,
+  getCoreToken,
+  helperLogs,
+  pingHelper,
+  registerHelperService,
+  startCoreByHelper,
+  stopCoreByHelper,
+} from "../system/helper";
+
+/** Max time for `mihomo -t` — without this, missing MMDB + GitHub hang freezes UI on "starting". */
+const CONFIG_TEST_TIMEOUT_MS = 12_000;
+/** Max wall time for a full start attempt before we surface an error. */
+const START_WATCHDOG_MS = 90_000;
 
 export class CoreSupervisor extends EventEmitter {
   private process: ChildProcess | null = null;
+  /** True when mihomo was launched by the Windows Helper Service (no local ChildProcess). */
+  private managedByHelper = false;
   private status: CoreStatus = "stopped";
   private version?: string;
   private error?: string;
@@ -33,6 +52,9 @@ export class CoreSupervisor extends EventEmitter {
   private runtimeTun = false;
   /** Hash of last config that passed `mihomo -t` — skip re-test when unchanged. */
   private lastValidConfigHash: string | null = null;
+  /** Prevent overlapping starts; also used to recover from a hung "starting". */
+  private startInFlight: Promise<CoreState> | null = null;
+  private startBeganAt = 0;
   api: MihomoApi | null = null;
 
   constructor() {
@@ -123,13 +145,50 @@ export class CoreSupervisor extends EventEmitter {
     }
   }
 
+  /**
+   * Prefer Helper when TUN is on (Windows). Admin process can still spawn
+   * directly. Non-TUN always uses local spawn (no elevation needed).
+   */
+  private async shouldUseHelper(settings: AppSettings): Promise<boolean> {
+    if (process.platform !== "win32") return false;
+    if (!settings.tun) return false;
+    if (await isWindowsAdmin()) return false;
+    return true;
+  }
+
   async start(options?: { forceRestart?: boolean }) {
     if (this.status === "running" && !options?.forceRestart) {
       return this.getState();
     }
-    if (this.status === "starting") return this.getState();
 
-    if (this.process) {
+    // If a previous start is hung on "starting", allow recovery after watchdog.
+    if (this.startInFlight) {
+      const elapsed = Date.now() - this.startBeganAt;
+      if (elapsed < START_WATCHDOG_MS && !options?.forceRestart) {
+        return this.startInFlight;
+      }
+      this.emit("log", {
+        type: "warning",
+        payload: `[core] previous start hung (${elapsed}ms) — forcing retry`,
+      });
+      this.startInFlight = null;
+      try {
+        await this.stop(true);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    this.startBeganAt = Date.now();
+    const work = this.startInner(options).finally(() => {
+      if (this.startInFlight === work) this.startInFlight = null;
+    });
+    this.startInFlight = work;
+    return work;
+  }
+
+  private async startInner(options?: { forceRestart?: boolean }) {
+    if (this.process || this.managedByHelper) {
       await this.stop(true);
     }
 
@@ -151,29 +210,113 @@ export class CoreSupervisor extends EventEmitter {
       /* ignore */
     }
 
+    // Windows TUN needs wintun.dll next to mihomo
+    if (process.platform === "win32") {
+      const w = ensureWintunBesideMihomo(binary);
+      if (!w.ok) {
+        this.emit("log", {
+          type: "warning",
+          payload: `[tun] ${w.message}`,
+        });
+      }
+    }
+
+    // Pre-fetch geodata so mihomo won't block on GitHub during -t / boot
+    this.emit("log", {
+      type: "info",
+      payload: "[geo] ensuring critical geodata…",
+    });
+    const geo = await ensureCriticalGeo({
+      onLog: (msg) => this.emit("log", { type: "info", payload: msg }),
+    });
+    if (!geo.ok) {
+      this.emit("log", {
+        type: "warning",
+        payload: `[geo] still missing: ${geo.missing.join(", ")} — start may be slow if mihomo tries to auto-download`,
+      });
+    }
+
     const settings = loadSettings();
     const home = getHomeDir();
     const { configPath, warnings, selectedMap, configHash } =
       await this.writeRuntimeConfig(settings);
 
     // Full `mihomo -t` is expensive; only re-run when merged config changed.
+    // Always hard-timeout: missing MMDB previously hung forever on GitHub.
     const needTest =
       !this.lastValidConfigHash || this.lastValidConfigHash !== configHash;
     if (needTest) {
       try {
+        this.emit("log", {
+          type: "info",
+          payload: "[core] testing config…",
+        });
         await this.testConfig(binary, home, configPath);
         this.lastValidConfigHash = configHash;
       } catch (e) {
         const raw = e instanceof Error ? e.message : String(e);
-        const hint = warnings.length
-          ? `\n\nConfig notes:\n- ${warnings.join("\n- ")}`
-          : "";
-        const msg = extractConfigError(raw) + hint;
-        this.setStatus("error", msg);
-        throw new Error(msg);
+        // Timeout: skip gate and try real start (user sees logs if it still fails)
+        if (/timed out/i.test(raw)) {
+          this.emit("log", {
+            type: "warning",
+            payload: `[core] config test timed out — starting anyway. ${raw}`,
+          });
+        } else {
+          const hint = warnings.length
+            ? `\n\nConfig notes:\n- ${warnings.join("\n- ")}`
+            : "";
+          const msg = extractConfigError(raw) + hint;
+          this.setStatus("error", msg);
+          throw new Error(msg);
+        }
       }
     }
 
+    const useHelper = await this.shouldUseHelper(settings);
+    if (useHelper) {
+      await this.startViaHelper(binary, home, configPath, settings);
+    } else {
+      await this.startLocal(binary, home, configPath, settings);
+    }
+
+    this.api = new MihomoApi(settings.externalController, this.secret);
+    try {
+      this.version = await waitForApi(this.api);
+      this.restartAttempts = 0;
+      this.setStatus("running");
+      // Node selection is non-critical for "started" feedback — fire and forget
+      if (selectedMap && Object.keys(selectedMap).length) {
+        void this.applySelectedMap(selectedMap);
+      }
+      return this.getState();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Pull helper logs for diagnosis
+      if (useHelper) {
+        try {
+          const logs = await helperLogs();
+          if (logs.trim()) {
+            this.emit("log", {
+              type: "error",
+              payload: `[helper] ${logs.trim().slice(-2000)}`,
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      await this.stop(true);
+      this.setStatus("error", msg);
+      throw e;
+    }
+  }
+
+  private async startLocal(
+    binary: string,
+    home: string,
+    configPath: string,
+    settings: AppSettings,
+  ) {
     const child = spawn(binary, ["-d", home, "-f", configPath], {
       cwd: home,
       env: { ...process.env },
@@ -181,6 +324,7 @@ export class CoreSupervisor extends EventEmitter {
       windowsHide: true,
     });
     this.process = child;
+    this.managedByHelper = false;
     this.runtimeTun = !!settings.tun;
 
     child.stdout?.on("data", (buf: Buffer) => {
@@ -207,40 +351,116 @@ export class CoreSupervisor extends EventEmitter {
         }, 1000);
       }
     });
+  }
 
-    this.api = new MihomoApi(settings.externalController, this.secret);
-    try {
-      this.version = await waitForApi(this.api);
-      this.restartAttempts = 0;
-      this.setStatus("running");
-      // Node selection is non-critical for "started" feedback — fire and forget
-      if (selectedMap && Object.keys(selectedMap).length) {
-        void this.applySelectedMap(selectedMap);
+  private async startViaHelper(
+    binary: string,
+    home: string,
+    configPath: string,
+    settings: AppSettings,
+  ) {
+    const token = getCoreToken(binary);
+    let st = await checkHelperService(token);
+    if (st !== "running") {
+      // Ensure service is installed (UAC once)
+      const reg = await registerHelperService(binary);
+      if (!reg.ok) {
+        this.setStatus("error", reg.message);
+        throw new Error(reg.message);
       }
-      return this.getState();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      await this.stop(true);
-      this.setStatus("error", msg);
-      throw e;
+      st = await checkHelperService(token);
     }
+    if (st !== "running" || !(await pingHelper(token))) {
+      // Token mismatch: service may have been built for another mihomo hash.
+      // Retry register (user may need to rebuild helper with current TOKEN).
+      const reg2 = await registerHelperService(binary);
+      if (!reg2.ok) {
+        const msg =
+          "Helper service not reachable. Rebuild helper with TOKEN=sha256(mihomo) or run as Administrator.";
+        this.setStatus("error", msg);
+        throw new Error(msg);
+      }
+    }
+
+    // Always stop previous helper-managed core first
+    await stopCoreByHelper();
+
+    const res = await startCoreByHelper({
+      path: binary,
+      args: ["-d", home, "-f", configPath],
+      cwd: home,
+    });
+    if (!res.ok) {
+      this.setStatus("error", res.message);
+      throw new Error(res.message);
+    }
+
+    this.process = null;
+    this.managedByHelper = true;
+    this.runtimeTun = !!settings.tun;
+    markTunElevated();
+    this.emit("log", {
+      type: "info",
+      payload: "[helper] mihomo started via ClashNodeHelperService",
+    });
   }
 
   private testConfig(binary: string, home: string, configPath: string) {
     return new Promise<void>((resolve, reject) => {
       const child = spawn(binary, ["-t", "-d", home, "-f", configPath], {
         cwd: home,
+        windowsHide: true,
+        env: {
+          ...process.env,
+          // Discourage long auto-downloads during validate if geodata missing
+          SKIP_GEOIP_UPDATE: process.env.SKIP_GEOIP_UPDATE ?? "",
+        },
       });
       let err = "";
-      child.stderr.on("data", (b) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const timer = setTimeout(() => {
+        try {
+          if (process.platform === "win32" && child.pid) {
+            spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+              windowsHide: true,
+              stdio: "ignore",
+            });
+          } else {
+            child.kill("SIGKILL");
+          }
+        } catch {
+          /* ignore */
+        }
+        finish(() =>
+          reject(
+            new Error(
+              `Config test timed out after ${CONFIG_TEST_TIMEOUT_MS}ms (often missing geodata / network).`,
+            ),
+          ),
+        );
+      }, CONFIG_TEST_TIMEOUT_MS);
+
+      child.stderr?.on("data", (b) => {
         err += b.toString();
       });
-      child.stdout.on("data", (b) => {
+      child.stdout?.on("data", (b) => {
         err += b.toString();
+      });
+      child.on("error", (e) => {
+        finish(() => reject(e));
       });
       child.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(err.trim() || `Config test failed (${code})`));
+        if (code === 0) finish(() => resolve());
+        else
+          finish(() =>
+            reject(new Error(err.trim() || `Config test failed (${code})`)),
+          );
       });
     });
   }
@@ -248,14 +468,34 @@ export class CoreSupervisor extends EventEmitter {
   async stop(silent = false) {
     this.intentionalStop = true;
     if (!silent) this.setStatus("stopping");
+
+    if (this.managedByHelper) {
+      await stopCoreByHelper().catch(() => false);
+      this.managedByHelper = false;
+    } else if (process.platform === "win32") {
+      // Best-effort: clear any leftover helper-owned core without blocking long
+      void stopCoreByHelper().catch(() => false);
+    }
+
     const proc = this.process;
     this.process = null;
     this.api = null;
     this.runtimeTun = false;
     if (proc && !proc.killed) {
-      proc.kill("SIGTERM");
+      try {
+        if (process.platform === "win32" && proc.pid) {
+          // Hard kill tree on Windows
+          spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
+            windowsHide: true,
+            stdio: "ignore",
+          });
+        } else {
+          proc.kill("SIGTERM");
+        }
+      } catch {
+        /* ignore */
+      }
       await new Promise<void>((resolve) => {
-        // FlClash-style snappy stop: escalate quickly instead of waiting 3s
         const t = setTimeout(() => {
           try {
             proc.kill("SIGKILL");
@@ -302,7 +542,7 @@ export class CoreSupervisor extends EventEmitter {
     const prevController = this.getState().controller;
     const prevTun = this.runtimeTun;
     // TUN enable/disable on a live process: FlClash always restarts after
-    // privilege grant so setuid takes effect. Patch-only leaves euid as the user.
+    // privilege grant so setuid / helper takes effect. Patch-only leaves euid as the user.
     const needRestart =
       this.status === "running" &&
       (settings.mixedPort !== prevPort ||
@@ -339,7 +579,7 @@ export class CoreSupervisor extends EventEmitter {
   /**
    * TUN privilege check.
    * - macOS: root-owned + setuid bit on mihomo binary (FlClash)
-   * - Windows: admin process OR elevated flag after UAC prep
+   * - Windows: admin process OR helper service running OR elevated flag
    */
   async checkTunAuthorized(): Promise<boolean> {
     const binary = getMihomoPath();
@@ -347,6 +587,8 @@ export class CoreSupervisor extends EventEmitter {
 
     if (process.platform === "win32") {
       if (await isWindowsAdmin()) return true;
+      const st = await checkHelperService(getCoreToken(binary));
+      if (st === "running") return true;
       return isTunMarkedElevated();
     }
 
@@ -362,9 +604,9 @@ export class CoreSupervisor extends EventEmitter {
   }
 
   /**
-   * Elevate mihomo for TUN. Caller must restart core after success.
+   * Elevate for TUN. Caller must restart core after success.
    * - macOS: osascript chown root:admin + chmod +sx
-   * - Windows: UAC prep script + firewall allow (Wintun still prefers admin)
+   * - Windows: install/start ClashNodeHelperService + firewall prep
    */
   authorizeTunBinary(): Promise<{ ok: boolean; message: string }> {
     return (async () => {
@@ -398,7 +640,30 @@ export class CoreSupervisor extends EventEmitter {
       }
 
       if (process.platform === "win32") {
-        return authorizeWindowsTun(binary);
+        // 1) Ensure wintun next to binary
+        ensureWintunBesideMihomo(binary);
+        // 2) Firewall / unblock prep (best-effort)
+        const prep = await authorizeWindowsTun(binary);
+        // 3) Install helper service (real elevation path)
+        const reg = await registerHelperService(binary);
+        if (reg.ok) {
+          markTunElevated();
+          return {
+            ok: true,
+            message:
+              "Helper service ready. Enable TUN and start core — mihomo will run elevated.",
+          };
+        }
+        if (prep.ok) {
+          return {
+            ok: true,
+            message: `${prep.message} (helper install failed: ${reg.message})`,
+          };
+        }
+        return {
+          ok: false,
+          message: reg.message || prep.message,
+        };
       }
 
       return {

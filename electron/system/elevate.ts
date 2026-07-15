@@ -1,6 +1,7 @@
 /**
  * Privilege helpers for TUN.
- * - Windows: detect admin; UAC elevate a one-shot prep script (Wintun-ready)
+ * - Windows: detect admin; UAC prep (firewall / unblock). Prefer
+ *   ClashNodeHelperService (see helper.ts) for actually running mihomo elevated.
  * - macOS: handled in supervisor via osascript
  */
 import { execFile } from "node:child_process";
@@ -155,13 +156,13 @@ exit 0
     return {
       ok: true,
       message:
-        "Elevation complete. If TUN still fails, restart ClashNode as Administrator once so Wintun can install.",
+        "Firewall prep complete. Install Helper Service (Authorize TUN) so mihomo can create Wintun.",
     };
   }
   return {
     ok: false,
     message:
       res.message ||
-      "UAC cancelled. Run ClashNode as Administrator to enable TUN on Windows.",
+      "UAC cancelled. Use Authorize TUN to install ClashNodeHelperService, or run as Administrator.",
   };
 }

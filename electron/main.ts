@@ -78,6 +78,8 @@ import {
 } from "./system/updater";
 import { applyLoginItem } from "./system/autolaunch";
 import { registerDefaultProtocols } from "./system/protocol";
+import { openEnableLoopback } from "./system/helper";
+import { zipDirectory, unzipToDirectory } from "./store/archive";
 import type {
   AppSettings,
   CustomProxyGroup,
@@ -85,7 +87,6 @@ import type {
   RequestItem,
   TrafficSnapshot,
 } from "./shared/types";
-import { spawn } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -215,18 +216,39 @@ function createWindow() {
   const isDark = nativeTheme.shouldUseDarkColors;
   const windowIcon =
     iconAssetPath(isDark ? "dock-dark.png" : "dock-light.png");
+  const isMac = process.platform === "darwin";
+  const isWin = process.platform === "win32";
+  const bg = isDark ? "#0f0f0f" : "#fafafa";
+
   mainWindow = new BrowserWindow({
     width: 1111,
     height: 750,
     minWidth: 1111,
     minHeight: 750,
     title: "ClashNode",
-    // Custom traffic lights; CSS -webkit-app-region:drag on top safe area
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 12 },
-    backgroundColor: isDark ? "#0f0f0f" : "#fafafa",
+    backgroundColor: bg,
     icon: fs.existsSync(windowIcon) ? windowIcon : undefined,
     show: false,
+    // macOS: hiddenInset + traffic lights (sidebar pads left for them).
+    // Windows: hidden title bar + overlay caption buttons on the right
+    //          (no left chrome — sidebar toggle sits flush-left).
+    ...(isMac
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 16, y: 12 },
+        }
+      : isWin
+        ? {
+            titleBarStyle: "hidden" as const,
+            titleBarOverlay: {
+              color: bg,
+              symbolColor: isDark ? "#fafafa" : "#111111",
+              height: 40,
+            },
+          }
+        : {
+            titleBarStyle: "hidden" as const,
+          }),
     webPreferences: {
       // Built as CJS so require("electron") works in the preload sandbox
       preload: path.join(__dirname, "preload.cjs"),
@@ -723,9 +745,15 @@ function registerIpc() {
       }
     },
   );
-  ipcMain.handle("api:delay", (_e, name: string) => {
-    const url = loadSettings().testUrl;
-    return withApi((api) => api.delay(name, url));
+  ipcMain.handle("api:delay", async (_e, name: string) => {
+    // Node latency tests often 503/504 — return 0 instead of throwing so
+    // Electron doesn't spam "Error occurred in handler for 'api:delay'".
+    try {
+      const url = loadSettings().testUrl;
+      return await withApi((api) => api.delay(name, url));
+    } catch {
+      return { delay: 0 };
+    }
   });
   ipcMain.handle("api:connections", () => withApi((api) => api.connections()));
   ipcMain.handle("api:close-connection", (_e, id: string) =>
@@ -926,6 +954,7 @@ function registerIpc() {
     return next;
   });
   ipcMain.handle("system:authorize-tun", () => supervisor.authorizeTunBinary());
+  ipcMain.handle("system:enable-loopback", () => openEnableLoopback());
   ipcMain.handle("system:copy-proxy-env", () => {
     const s = loadSettings();
     const host = "127.0.0.1";
@@ -995,12 +1024,12 @@ function registerIpc() {
 
   ipcMain.handle("backup:create", async () => {
     const res = await dialog.showSaveDialog({
-      defaultPath: `clashnode-backup-${Date.now()}.zip`,
+      defaultPath: `clashnode-backup-${new Date().toISOString().slice(0, 10)}.zip`,
       filters: [{ name: "Zip", extensions: ["zip"] }],
     });
     if (res.canceled || !res.filePath) return null;
     const home = getHomeDir();
-    await zipDir(home, res.filePath);
+    await zipDirectory(home, res.filePath);
     return res.filePath;
   });
   ipcMain.handle("backup:restore", async () => {
@@ -1009,30 +1038,12 @@ function registerIpc() {
       filters: [{ name: "Zip", extensions: ["zip"] }],
     });
     if (res.canceled || !res.filePaths[0]) return false;
-    await unzipTo(res.filePaths[0], getHomeDir());
+    await unzipToDirectory(res.filePaths[0], getHomeDir());
     if (supervisor.getState().status === "running") {
       await supervisor.restart();
     }
     mainWindow?.webContents.send("settings:changed", loadSettings());
     return true;
-  });
-}
-
-function zipDir(srcDir: string, outFile: string) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn("zip", ["-r", outFile, "."], { cwd: srcDir });
-    child.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`zip failed: ${code}`)),
-    );
-  });
-}
-
-function unzipTo(zipFile: string, dest: string) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn("unzip", ["-o", zipFile, "-d", dest]);
-    child.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`unzip failed: ${code}`)),
-    );
   });
 }
 

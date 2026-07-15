@@ -110,9 +110,15 @@ export function getMihomoPath() {
     if (fs.existsSync(work)) {
       const st = fs.statSync(work);
       // Keep an already-elevated setuid binary (macOS)
-      if ((st.mode & 0o4000) !== 0) return work;
+      if ((st.mode & 0o4000) !== 0) {
+        ensureWintunBesideMihomo(work);
+        return work;
+      }
       const srcMtime = fs.statSync(bundled).mtimeMs;
-      if (srcMtime <= st.mtimeMs) return work;
+      if (srcMtime <= st.mtimeMs) {
+        ensureWintunBesideMihomo(work);
+        return work;
+      }
     }
     fs.copyFileSync(bundled, work);
     try {
@@ -120,10 +126,73 @@ export function getMihomoPath() {
     } catch {
       /* windows may not chmod */
     }
+    ensureWintunBesideMihomo(work);
     return work;
   } catch {
     return bundled;
   }
+}
+
+/** Bundled resource bin directories (packaged + dev). */
+export function getResourceBinDirs(): string[] {
+  if (app.isPackaged) {
+    return [path.join(process.resourcesPath, "bin")];
+  }
+  return [
+    path.join(app.getAppPath(), "resources", "bin"),
+    path.join(process.cwd(), "resources", "bin"),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../../resources/bin"),
+  ];
+}
+
+/**
+ * Copy wintun.dll next to the mihomo binary (required for Windows TUN).
+ * Prefers arch-tagged names: wintun-amd64.dll / wintun-arm64.dll → wintun.dll
+ */
+export function ensureWintunBesideMihomo(
+  mihomoPath: string,
+): { ok: boolean; message: string; dest?: string } {
+  if (process.platform !== "win32") {
+    return { ok: true, message: "not windows" };
+  }
+  const dir = path.dirname(mihomoPath);
+  const dest = path.join(dir, "wintun.dll");
+  if (fs.existsSync(dest)) {
+    return { ok: true, message: "wintun.dll present", dest };
+  }
+
+  const arch = process.arch; // x64 | arm64 | …
+  const archAlias = arch === "x64" ? "amd64" : arch;
+  const names = [
+    `wintun-${archAlias}.dll`,
+    `wintun-${arch}.dll`,
+    "wintun.dll",
+    "wintun-amd64.dll",
+    "wintun-arm64.dll",
+  ];
+
+  for (const base of getResourceBinDirs()) {
+    for (const n of names) {
+      const src = path.join(base, n);
+      if (!fs.existsSync(src)) continue;
+      try {
+        ensureDir(dir);
+        fs.copyFileSync(src, dest);
+        return { ok: true, message: `copied ${n}`, dest };
+      } catch (e) {
+        return {
+          ok: false,
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    message:
+      "wintun.dll not found. Run: bash scripts/fetch-wintun.sh  (or place wintun.dll under resources/bin)",
+  };
 }
 
 export function ensureDir(dir: string) {

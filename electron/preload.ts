@@ -189,6 +189,8 @@ const api = {
     ipcRenderer.invoke("system:proxy", enabled),
   authorizeTun: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("system:authorize-tun"),
+  enableLoopback: (): Promise<{ ok: boolean; message: string }> =>
+    ipcRenderer.invoke("system:enable-loopback"),
   copyProxyEnv: (): Promise<string> =>
     ipcRenderer.invoke("system:copy-proxy-env"),
 

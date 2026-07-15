@@ -11,7 +11,7 @@ Quiet macOS & Windows proxy client powered by **mihomo** (Clash Meta), with a mo
 - Dashboard with customizable widgets + live traffic chart
 - Connections, requests, rules, logs, geo resources
 - System proxy: macOS (networksetup) · Windows (WinINet+RAS)
-- Optional TUN: macOS setuid elevation; Windows UAC/admin (see `docs/CROSS-PLATFORM.md`)
+- Optional TUN: macOS setuid elevation; Windows Helper Service + Wintun (see `docs/CROSS-PLATFORM.md`)
 - Ports (mixed / HTTP / SOCKS / redir / tproxy), DNS, on-demand SSID
 - Global hotkeys (press-to-record), theme presets, WebDAV backup
 - Tray menu (groups/modes all desktop), in-app updater hooks (`electron-updater`)
@@ -38,6 +38,11 @@ Quiet macOS & Windows proxy client powered by **mihomo** (Clash Meta), with a mo
 ```bash
 npm run fetch-mihomo          # download MetaCubeX release binaries
 # produces mihomo-darwin-*, mihomo-windows-*.exe, …
+
+# Windows extras (TUN):
+npm run fetch-wintun          # wintun.dll
+npm run build:helper          # ClashNodeHelperService.exe (Rust)
+# or: npm run prepare:win
 ```
 
 ## Develop
@@ -55,7 +60,7 @@ npm run dev
 npm run icons:platform        # icon.ico for Windows
 npm run build
 npm run dist:mac              # dmg (arm64 + x64)
-npm run dist:win              # nsis + zip (x64 + arm64)
+npm run dist:win              # prepare:win + nsis + zip (x64 + arm64)
 ```
 
 Cross-platform notes: `docs/CROSS-PLATFORM.md`.  
