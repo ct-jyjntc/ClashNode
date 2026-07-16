@@ -157,6 +157,72 @@ body {
   outline-color: var(--ring);
 }
 
+.quiet-range {
+  height: 20px;
+  cursor: pointer;
+  appearance: none;
+  background: transparent;
+}
+
+.quiet-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+
+.quiet-range::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid var(--card);
+  border-radius: 9999px;
+  background: var(--foreground);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 1px 2px color-mix(in oklab, var(--foreground) 18%, transparent);
+  transition:
+    box-shadow 120ms ease,
+    transform 120ms ease;
+}
+
+.quiet-range::-moz-range-track {
+  height: 4px;
+  background: transparent;
+}
+
+.quiet-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--card);
+  border-radius: 9999px;
+  background: var(--foreground);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 1px 2px color-mix(in oklab, var(--foreground) 18%, transparent);
+}
+
+.quiet-range:focus-visible {
+  outline: none;
+}
+
+.quiet-range:focus-visible::-webkit-slider-thumb,
+.quiet-range:hover::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--ring) 18%, transparent),
+    0 0 0 1px var(--ring);
+}
+
+.quiet-range:focus-visible::-moz-range-thumb,
+.quiet-range:hover::-moz-range-thumb {
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--ring) 18%, transparent),
+    0 0 0 1px var(--ring);
+}
+
+.quiet-range:active::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+
 /*
  * macOS hiddenInset window drag.
  * -webkit-app-region: drag steals clicks even under higher z-index siblings.

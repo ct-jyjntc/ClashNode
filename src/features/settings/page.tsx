@@ -21,7 +21,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAppStore } from "@/shared/hooks/use-app-state";
 import { getApi } from "@/shared/lib/api";
 import { applyUiChrome } from "@/shared/lib/theme-accent";
@@ -164,6 +164,7 @@ export function SettingsPage() {
     null,
   );
   const [ssidText, setSsidText] = useState("");
+  const [settingsSection, setSettingsSection] = useState("general");
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
 
@@ -593,6 +594,8 @@ export function SettingsPage() {
   }
 
   const endpoint = `http://${draft.externalController}`;
+  const textScale = Math.min(1.25, Math.max(0.85, draft.textScale ?? 1));
+  const textScaleProgress = ((textScale - 0.85) / 0.4) * 100;
 
   return (
     <div className="space-y-6">
@@ -607,9 +610,27 @@ export function SettingsPage() {
         }
       />
 
-      <section className="grid gap-2 lg:grid-cols-2">
+      <Tabs value={settingsSection} onValueChange={setSettingsSection}>
+        <TabsList className="sticky top-0 z-10 grid h-auto w-full grid-cols-2 gap-1 bg-card p-1 sm:grid-cols-4">
+          <TabsTrigger className="h-8" value="general">
+            {t.settings.sectionGeneral}
+          </TabsTrigger>
+          <TabsTrigger className="h-8" value="features">
+            {t.settings.sectionFeatures}
+          </TabsTrigger>
+          <TabsTrigger className="h-8" value="system">
+            {t.settings.sectionSystem}
+          </TabsTrigger>
+          <TabsTrigger className="h-8" value="advanced">
+            {t.settings.sectionAdvanced}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="general" className="mt-6 space-y-6">
+      <section className="space-y-6">
         <Card className="space-y-4 p-4 sm:p-5">
           <h2 className="text-sm font-medium">{t.settings.general}</h2>
+          <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-2">
             <Label>{t.settings.language}</Label>
             <Tabs value={locale} onValueChange={(v) => setLocale(v as Locale)}>
@@ -695,23 +716,36 @@ export function SettingsPage() {
               {t.settings.accentHint}
             </p>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="textScale">
-              {t.settings.textScale} · {draft.textScale?.toFixed?.(2) ?? "1.00"}
-            </Label>
-            <input
-              id="textScale"
-              type="range"
-              min={0.85}
-              max={1.25}
-              step={0.05}
-              value={draft.textScale ?? 1}
-              onChange={(e) => patch("textScale", Number(e.target.value))}
-              className="w-full accent-foreground"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              {t.settings.textScaleHint}
-            </p>
+          <div className="space-y-2 lg:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="textScale">{t.settings.textScale}</Label>
+              <span className="rounded-full bg-secondary/70 px-2 py-0.5 font-mono text-[11px] tabular-nums text-foreground">
+                {Math.round(textScale * 100)}%
+              </span>
+            </div>
+            <div className="relative flex h-5 items-center">
+              <div className="absolute inset-x-0 h-1 overflow-hidden rounded-full bg-border/70">
+                <div
+                  className="h-full rounded-full bg-foreground transition-[width] duration-150"
+                  style={{ width: `${textScaleProgress}%` }}
+                />
+              </div>
+              <input
+                id="textScale"
+                type="range"
+                min={0.85}
+                max={1.25}
+                step={0.05}
+                value={textScale}
+                aria-valuetext={`${Math.round(textScale * 100)}%`}
+                onChange={(e) => patch("textScale", Number(e.target.value))}
+                className="quiet-range relative z-[1] w-full"
+              />
+            </div>
+            <div className="flex justify-between font-mono text-[10px] tabular-nums text-muted-foreground">
+              <span>85%</span>
+              <span>125%</span>
+            </div>
           </div>
           <div className="space-y-2">
             <Label>{t.settings.mode}</Label>
@@ -743,10 +777,12 @@ export function SettingsPage() {
               </TabsList>
             </Tabs>
           </div>
+          </div>
         </Card>
 
         <Card className="space-y-3 p-4 sm:p-5">
           <h2 className="text-sm font-medium">{t.settings.proxy}</h2>
+          <div className="grid gap-3 lg:grid-cols-3">
           <div className="space-y-2">
             <Label htmlFor="mixedPort">{t.settings.mixedPort}</Label>
             <Input
@@ -772,6 +808,8 @@ export function SettingsPage() {
               onChange={(e) => patch("testUrl", e.target.value)}
             />
           </div>
+          </div>
+          <div className="grid gap-2 lg:grid-cols-2">
           <SwitchRow
             title={t.settings.allowLan}
             desc={t.settings.allowLanHint}
@@ -796,10 +834,11 @@ export function SettingsPage() {
             checked={!!draft.ipv6}
             onCheckedChange={(v) => patch("ipv6", v)}
           />
+          </div>
         </Card>
       </section>
 
-      <section className="grid gap-2 lg:grid-cols-2">
+      <section className="space-y-6">
         <Card className="space-y-3 p-4 sm:p-5">
           <div>
             <h2 className="text-sm font-medium">{t.settings.ports}</h2>
@@ -807,7 +846,7 @@ export function SettingsPage() {
               {t.settings.portsHint}
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {(
               [
                 ["port", t.settings.portHttp],
@@ -839,6 +878,7 @@ export function SettingsPage() {
               {t.settings.onDemandHint}
             </p>
           </div>
+          <div className="grid gap-2 lg:grid-cols-2">
           <SwitchRow
             title={t.settings.onDemandEnable}
             desc={t.settings.onDemandHint}
@@ -851,6 +891,7 @@ export function SettingsPage() {
             checked={draft.onDemand?.pauseWhenOffline !== false}
             onCheckedChange={(v) => patchOnDemand("pauseWhenOffline", v)}
           />
+          </div>
           <ListArea
             id="onDemandSsids"
             label={t.settings.onDemandSsids}
@@ -862,7 +903,7 @@ export function SettingsPage() {
         </Card>
       </section>
 
-      <section className="grid gap-2 lg:grid-cols-2">
+      <section className="space-y-6">
         <Card className="space-y-3 p-4 sm:p-5">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-medium">{t.settings.bypass}</h2>
@@ -882,12 +923,13 @@ export function SettingsPage() {
             hint={t.settings.bypassHint}
             value={bypassText}
             onChange={setBypassText}
-            rows={8}
+            rows={6}
           />
         </Card>
 
         <Card className="space-y-3 p-4 sm:p-5">
           <h2 className="text-sm font-medium">{t.settings.behavior}</h2>
+          <div className="grid gap-2 lg:grid-cols-2">
           <SwitchRow
             title={t.settings.startOnLaunch}
             desc={t.settings.startOnLaunchHint}
@@ -912,6 +954,8 @@ export function SettingsPage() {
             checked={draft.showTrayTitle !== false}
             onCheckedChange={(v) => patch("showTrayTitle", v)}
           />
+          </div>
+          <div className="grid items-start gap-2 lg:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="autoUpdate">{t.settings.autoUpdateHours}</Label>
             <Input
@@ -943,9 +987,12 @@ export function SettingsPage() {
               aria-label={t.settings.checkUpdateOnLaunch}
             />
           </div>
+          </div>
         </Card>
       </section>
+        </TabsContent>
 
+        <TabsContent value="features" className="mt-6 space-y-6">
       <Card className="space-y-4 p-4 sm:p-5">
         <h2 className="text-sm font-medium">{t.settings.dns}</h2>
         <div className="grid gap-3 lg:grid-cols-2">
@@ -1101,8 +1148,10 @@ export function SettingsPage() {
           })}
         </div>
       </Card>
+        </TabsContent>
 
-      <section className="grid gap-2 lg:grid-cols-2">
+        <TabsContent value="system" className="mt-6 space-y-6">
+      <section className="space-y-6">
         <Card className="space-y-3 p-4 sm:p-5">
           <h2 className="text-sm font-medium">{t.settings.advanced}</h2>
           <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
@@ -1147,6 +1196,7 @@ export function SettingsPage() {
               </Button>
             </div>
           ) : null}
+          <div className="grid gap-3 lg:grid-cols-2">
           <div className="space-y-2">
             <Label>{t.settings.apiEndpoint}</Label>
             <div className="flex gap-2">
@@ -1181,6 +1231,7 @@ export function SettingsPage() {
                 {t.settings.copy}
               </Button>
             </div>
+          </div>
           </div>
           <div className="space-y-2">
             <Label>{t.settings.paths}</Label>
@@ -1422,7 +1473,9 @@ export function SettingsPage() {
           </Button>
         </div>
       </Card>
+        </TabsContent>
 
+        <TabsContent value="advanced" className="mt-6 space-y-6">
       <Card className="space-y-3 p-4 sm:p-5">
         <div>
           <h2 className="text-sm font-medium">{t.settings.advancedMihomo}</h2>
@@ -1673,6 +1726,8 @@ export function SettingsPage() {
           minHeight="288px"
         />
       </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
