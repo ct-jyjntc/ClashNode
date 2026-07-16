@@ -59,13 +59,44 @@ export type DashboardWidgetId =
   | "port"
   | "mode"
   | "network"
-  | "traffic";
+  | "traffic"
+  | "memory"
+  | "publicIp"
+  | "networkCheck";
 
 export interface DashboardLayout {
   widgets: DashboardWidgetId[];
 }
 
+export type GeodataLoader = "memconservative" | "standard";
+export type FindProcessMode = "strict" | "off" | "always";
+
+export interface GeoxUrlSettings {
+  geoip: string;
+  geosite: string;
+  mmdb: string;
+  asn: string;
+}
+
+export interface ProxiesUiSettings {
+  sort: "default" | "name" | "delay" | "type";
+  sortAsc: boolean;
+  density: "comfortable" | "compact";
+}
+
+export interface SystemDnsSettings {
+  enabled: boolean;
+  servers: string[];
+}
+
+/** Schema version for settings.json migrations */
+export const SETTINGS_VERSION = 1;
+/** Schema version for profiles.json migrations */
+export const PROFILES_VERSION = 1;
+
 export interface AppSettings {
+  /** Bumped when settings shape changes; used for migrations */
+  settingsVersion: number;
   mixedPort: number;
   allowLan: boolean;
   mode: ProxyMode;
@@ -99,6 +130,24 @@ export interface AppSettings {
   onDemand: OnDemandSettings;
   dashboard: DashboardLayout;
   themePreset: ThemePreset;
+  /** Static hosts map injected into runtime config */
+  hosts: Record<string, string>;
+  /** mihomo geox-url sources */
+  geoxUrl: GeoxUrlSettings;
+  keepAliveInterval: number;
+  geodataLoader: GeodataLoader;
+  /** global-ua written into config; also used for subscription download when set */
+  globalUa: string;
+  unifiedDelay: boolean;
+  tcpConcurrent: boolean;
+  findProcessMode: FindProcessMode;
+  /** Rules prepended for every profile (before profile prepend) */
+  globalPrependRules: string[];
+  proxiesUi: ProxiesUiSettings;
+  /** macOS: set system DNS servers when enabled */
+  systemDns: SystemDnsSettings;
+  /** Show developer tools section */
+  developerMode: boolean;
 }
 
 export interface SubscriptionInfo {
@@ -129,6 +178,12 @@ export interface Profile {
   customProxyGroups?: CustomProxyGroup[];
   /** Visual overwrite: rules replacing prependRules if set (same semantics) */
   customRules?: string[];
+  /** Rules inserted before final MATCH */
+  appendRules?: string[];
+  /** Custom proxy nodes merged by name into proxies[] */
+  customProxies?: Array<Record<string, unknown>>;
+  /** Custom proxy-providers merged by key */
+  customProxyProviders?: Record<string, Record<string, unknown>>;
 }
 
 export interface CustomProxyGroup {
@@ -137,9 +192,14 @@ export interface CustomProxyGroup {
   proxies: string[];
   url?: string;
   interval?: number;
+  icon?: string;
+  /** proxy-provider names */
+  use?: string[];
 }
 
 export interface ProfilesState {
+  /** Bumped when profiles.json shape changes */
+  profilesVersion?: number;
   currentId: string | null;
   items: Profile[];
 }
@@ -323,10 +383,40 @@ export const DEFAULT_DASHBOARD: DashboardLayout = {
     "mode",
     "network",
     "traffic",
+    "memory",
+    "publicIp",
+    "networkCheck",
   ],
 };
 
+export const DEFAULT_GEOX_URL: GeoxUrlSettings = {
+  geoip:
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
+  geosite:
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+  mmdb:
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
+  asn:
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb",
+};
+
+export const DEFAULT_PROXIES_UI: ProxiesUiSettings = {
+  sort: "default",
+  sortAsc: true,
+  density: "comfortable",
+};
+
+export const DEFAULT_SYSTEM_DNS: SystemDnsSettings = {
+  enabled: false,
+  servers: ["223.5.5.5", "119.29.29.29"],
+};
+
+/** Default UA for global-ua + subscription download */
+export const DEFAULT_GLOBAL_UA =
+  "clash.meta/v1.19.28 FlClash/v0.8.94 clash-verge Platform/darwin";
+
 export const DEFAULT_SETTINGS: AppSettings = {
+  settingsVersion: SETTINGS_VERSION,
   mixedPort: 7890,
   allowLan: false,
   mode: "rule",
@@ -357,6 +447,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onDemand: { ...DEFAULT_ON_DEMAND, ssids: [] },
   dashboard: { widgets: [...DEFAULT_DASHBOARD.widgets] },
   themePreset: "mono",
+  hosts: {},
+  geoxUrl: { ...DEFAULT_GEOX_URL },
+  keepAliveInterval: 30,
+  geodataLoader: "memconservative",
+  globalUa: DEFAULT_GLOBAL_UA,
+  unifiedDelay: true,
+  tcpConcurrent: true,
+  findProcessMode: "strict",
+  globalPrependRules: [],
+  proxiesUi: { ...DEFAULT_PROXIES_UI },
+  systemDns: {
+    ...DEFAULT_SYSTEM_DNS,
+    servers: [...DEFAULT_SYSTEM_DNS.servers],
+  },
+  developerMode: false,
 };
 
 export const THEME_PRESETS: Record<
@@ -424,3 +529,14 @@ export const GEO_DOWNLOAD_MIRRORS: Record<string, string[]> = {
     "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
   ],
 };
+
+/** Options passed into mergeConfig from profile + global settings */
+export interface MergeConfigOptions {
+  prependRules?: string[];
+  appendRules?: string[];
+  scriptId?: string | null;
+  customProxyGroups?: CustomProxyGroup[];
+  customProxies?: Array<Record<string, unknown>>;
+  customProxyProviders?: Record<string, Record<string, unknown>>;
+  globalPrependRules?: string[];
+}

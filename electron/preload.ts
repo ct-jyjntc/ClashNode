@@ -62,6 +62,21 @@ const api = {
     ipcRenderer.invoke("profiles:set-custom-groups", { id, groups }),
   setCustomRules: (id: string, rules: string[]): Promise<Profile> =>
     ipcRenderer.invoke("profiles:set-custom-rules", { id, rules }),
+  setAppendRules: (id: string, rules: string[]): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-append-rules", { id, rules }),
+  setCustomProxies: (
+    id: string,
+    proxies: Array<Record<string, unknown>>,
+  ): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-custom-proxies", { id, proxies }),
+  setCustomProxyProviders: (
+    id: string,
+    providers: Record<string, Record<string, unknown>>,
+  ): Promise<Profile> =>
+    ipcRenderer.invoke("profiles:set-custom-proxy-providers", {
+      id,
+      providers,
+    }),
   reorderProfiles: (ids: string[]): Promise<ProfilesState> =>
     ipcRenderer.invoke("profiles:reorder", ids),
   getMergedPreview: (id?: string): Promise<string> =>
@@ -100,11 +115,16 @@ const api = {
     htmlUrl: string | null;
     hasUpdate: boolean;
     checkedAt: string;
+    source?: "running" | "binary" | "none";
     error?: string;
   }> => ipcRenderer.invoke("app:check-update"),
   checkAppUpdate: (): Promise<{
     ok: boolean;
     version?: string | null;
+    current?: string;
+    hasUpdate?: boolean;
+    feed?: string;
+    htmlUrl?: string;
     error?: string;
   }> => ipcRenderer.invoke("app:check-app-update"),
   downloadAppUpdate: (): Promise<{ ok: boolean; error?: string }> =>
@@ -193,6 +213,27 @@ const api = {
     ipcRenderer.invoke("system:enable-loopback"),
   copyProxyEnv: (): Promise<string> =>
     ipcRenderer.invoke("system:copy-proxy-env"),
+  getPublicIp: (): Promise<
+    { ok: true; ip: string } | { ok: false; error: string }
+  > => ipcRenderer.invoke("system:public-ip"),
+  networkCheck: (): Promise<{
+    ok: boolean;
+    ms: number;
+    status?: number;
+    error?: string;
+  }> => ipcRenderer.invoke("system:network-check"),
+  setSystemDns: (
+    enabled: boolean,
+    servers?: string[],
+  ): Promise<AppSettings> => ipcRenderer.invoke("system:dns", enabled, servers),
+
+  openDevTools: (): Promise<boolean> =>
+    ipcRenderer.invoke("app:open-devtools"),
+  saveText: (
+    content: string,
+    defaultPath?: string,
+  ): Promise<string | null> =>
+    ipcRenderer.invoke("app:save-text", { content, defaultPath }),
 
   createBackup: (): Promise<string | null> =>
     ipcRenderer.invoke("backup:create"),

@@ -27,7 +27,10 @@ import {
   saveProfileContent,
   setCurrentProfile,
   saveProfilesState,
+  setAppendRules,
+  setCustomProxies,
   setCustomProxyGroups,
+  setCustomProxyProviders,
   setCustomRules,
   setPrependRules,
   setProfileScript,
@@ -47,6 +50,7 @@ import {
 import {
   getConfigPath,
   getHomeDir,
+  getMihomoBinaryVersion,
   getMihomoPath,
   getProfilesDir,
   getSettingsPath,
@@ -58,7 +62,12 @@ import {
   webdavTest,
   webdavUploadBackup,
 } from "./store/webdav";
-import { disableSystemProxy, enableSystemProxy } from "./system/proxy";
+import {
+  disableSystemProxy,
+  enableSystemProxy,
+  applySystemDns,
+  restoreSystemDns,
+} from "./system/proxy";
 import {
   destroyTray,
   scheduleTrayRebuild,
@@ -222,9 +231,9 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     width: 1111,
-    height: 750,
+    height: 780,
     minWidth: 1111,
-    minHeight: 750,
+    minHeight: 780,
     title: "ClashNode",
     backgroundColor: bg,
     icon: fs.existsSync(windowIcon) ? windowIcon : undefined,
@@ -561,6 +570,21 @@ function registerIpc() {
       syncSystemProxyBackground(next, running);
     }
 
+    if (patch.systemDns != null) {
+      try {
+        if (next.systemDns.enabled) {
+          await applySystemDns(next.systemDns.servers);
+        } else {
+          await restoreSystemDns();
+        }
+      } catch (e) {
+        mainWindow?.webContents.send("core:log", {
+          type: "warning",
+          payload: `[dns] ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
+
     const needsCorePatch =
       patch.mode != null ||
       patch.logLevel != null ||
@@ -572,7 +596,16 @@ function registerIpc() {
 
     const needsFullReload =
       patch.dns != null ||
-      patch.ports != null;
+      patch.ports != null ||
+      patch.hosts != null ||
+      patch.geoxUrl != null ||
+      patch.keepAliveInterval != null ||
+      patch.geodataLoader != null ||
+      patch.globalUa != null ||
+      patch.unifiedDelay != null ||
+      patch.tcpConcurrent != null ||
+      patch.findProcessMode != null ||
+      patch.globalPrependRules != null;
 
     if (needsCorePatch || needsFullReload) {
       // FlClash flow for TUN:
@@ -824,8 +857,12 @@ function registerIpc() {
         : profile?.prependRules;
     const { yaml: text } = await mergeConfig(yaml, settings, secret, {
       prependRules: prepend,
+      appendRules: profile?.appendRules,
       scriptId: profile?.scriptId,
       customProxyGroups: profile?.customProxyGroups,
+      customProxies: profile?.customProxies,
+      customProxyProviders: profile?.customProxyProviders,
+      globalPrependRules: settings.globalPrependRules,
     });
     return text;
   });
@@ -867,6 +904,63 @@ function registerIpc() {
     "profiles:set-custom-rules",
     async (_e, { id, rules }: { id: string; rules: string[] }) => {
       const next = setCustomRules(id, rules);
+      const st = loadProfilesState();
+      if (st.currentId === id) {
+        if (supervisor.getState().status === "running") {
+          await supervisor.reloadConfig();
+          if (next.selectedMap) await supervisor.applySelectedMap(next.selectedMap);
+        } else {
+          await supervisor.writeRuntimeConfig();
+        }
+      }
+      return next;
+    },
+  );
+  ipcMain.handle(
+    "profiles:set-append-rules",
+    async (_e, { id, rules }: { id: string; rules: string[] }) => {
+      const next = setAppendRules(id, rules);
+      const st = loadProfilesState();
+      if (st.currentId === id) {
+        if (supervisor.getState().status === "running") {
+          await supervisor.reloadConfig();
+          if (next.selectedMap) await supervisor.applySelectedMap(next.selectedMap);
+        } else {
+          await supervisor.writeRuntimeConfig();
+        }
+      }
+      return next;
+    },
+  );
+  ipcMain.handle(
+    "profiles:set-custom-proxies",
+    async (
+      _e,
+      { id, proxies }: { id: string; proxies: Array<Record<string, unknown>> },
+    ) => {
+      const next = setCustomProxies(id, proxies);
+      const st = loadProfilesState();
+      if (st.currentId === id) {
+        if (supervisor.getState().status === "running") {
+          await supervisor.reloadConfig();
+          if (next.selectedMap) await supervisor.applySelectedMap(next.selectedMap);
+        } else {
+          await supervisor.writeRuntimeConfig();
+        }
+      }
+      return next;
+    },
+  );
+  ipcMain.handle(
+    "profiles:set-custom-proxy-providers",
+    async (
+      _e,
+      {
+        id,
+        providers,
+      }: { id: string; providers: Record<string, Record<string, unknown>> },
+    ) => {
+      const next = setCustomProxyProviders(id, providers);
       const st = loadProfilesState();
       if (st.currentId === id) {
         if (supervisor.getState().status === "running") {
@@ -967,18 +1061,113 @@ function registerIpc() {
     return text;
   });
 
+  ipcMain.handle("system:public-ip", async () => {
+    const endpoints = [
+      "https://api.ipify.org?format=text",
+      "https://ifconfig.me/ip",
+      "https://icanhazip.com",
+    ];
+    for (const url of endpoints) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 5000);
+        const res = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!res.ok) continue;
+        const ip = (await res.text()).trim();
+        if (ip && ip.length < 64) return { ok: true as const, ip };
+      } catch {
+        /* try next */
+      }
+    }
+    return { ok: false as const, error: "Failed to resolve public IP" };
+  });
+
+  ipcMain.handle("system:network-check", async () => {
+    const s = loadSettings();
+    const url = s.testUrl || "https://www.gstatic.com/generate_204";
+    const started = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(url, {
+        method: "GET",
+        redirect: "manual",
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      return {
+        ok: res.status >= 200 && res.status < 500,
+        ms: Date.now() - started,
+        status: res.status,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        ms: Date.now() - started,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  });
+
+  ipcMain.handle(
+    "system:dns",
+    async (_e, enabled: boolean, servers?: string[]) => {
+      if (enabled) {
+        const list =
+          servers?.length ? servers : loadSettings().systemDns.servers;
+        await applySystemDns(list);
+        return updateSettings({
+          systemDns: { enabled: true, servers: list },
+        });
+      }
+      await restoreSystemDns();
+      const prev = loadSettings();
+      return updateSettings({
+        systemDns: { ...prev.systemDns, enabled: false },
+      });
+    },
+  );
+
+  ipcMain.handle("app:open-devtools", () => {
+    mainWindow?.webContents.openDevTools({ mode: "detach" });
+    return true;
+  });
+
+  ipcMain.handle(
+    "app:save-text",
+    async (
+      _e,
+      { content, defaultPath }: { content: string; defaultPath?: string },
+    ) => {
+      const result = await dialog.showSaveDialog(mainWindow!, {
+        defaultPath: defaultPath || "clashnode-export.txt",
+        filters: [
+          { name: "Text", extensions: ["txt", "log", "yaml", "yml", "json"] },
+          { name: "All", extensions: ["*"] },
+        ],
+      });
+      if (result.canceled || !result.filePath) return null;
+      fs.writeFileSync(result.filePath, content ?? "", "utf8");
+      return result.filePath;
+    },
+  );
+
   ipcMain.handle("app:check-update", async () => {
     const current = app.getVersion();
     try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 12_000);
       const res = await fetch(
         "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest",
         {
+          signal: ctrl.signal,
           headers: {
             "User-Agent": "ClashNode/0.1",
             Accept: "application/vnd.github+json",
           },
         },
-      );
+      ).finally(() => clearTimeout(timer));
       if (!res.ok) {
         return {
           current,
@@ -994,14 +1183,25 @@ function registerIpc() {
         html_url?: string;
       };
       const latest = (data.tag_name || "").replace(/^v/, "");
-      const curCore = supervisor.getState().version?.replace(/^v/, "") || "";
-      const hasUpdate = !!(latest && curCore && latest !== curCore);
+      // Prefer live core version if running; otherwise read from binary (-v).
+      // Never fall back to app version — that produced "current: 0.1.0" when core was stopped.
+      const live = supervisor.getState().version?.replace(/^v/, "") || "";
+      const fromBinary = live
+        ? null
+        : await getMihomoBinaryVersion();
+      const curCore = (live || fromBinary || "").replace(/^v/, "");
+      const hasUpdate = !!(
+        latest &&
+        curCore &&
+        latest !== curCore
+      );
       return {
-        current: curCore || current,
+        current: curCore || "unknown",
         latest: latest || null,
         htmlUrl: data.html_url || "https://github.com/MetaCubeX/mihomo/releases",
         hasUpdate,
         checkedAt: new Date().toISOString(),
+        source: live ? "running" : fromBinary ? "binary" : "none",
       };
     } catch (e) {
       return {
@@ -1091,8 +1291,25 @@ app.whenReady().then(async () => {
   if (bootLink) void handleDeepLink(bootLink);
 
   supervisor.on("state", () => broadcastState());
-  supervisor.on("log", (line) => {
-    mainWindow?.webContents.send("core:log", line);
+  supervisor.on("log", (line: { type?: string; payload?: string; time?: string }) => {
+    const stamped = {
+      type: line?.type || "info",
+      payload: line?.payload ?? "",
+      time: line?.time || new Date().toISOString(),
+    };
+    // mihomo may flush multi-line chunks
+    const parts = String(stamped.payload).split(/\r?\n/).filter((s) => s.trim());
+    if (parts.length <= 1) {
+      mainWindow?.webContents.send("core:log", stamped);
+      return;
+    }
+    for (const part of parts) {
+      mainWindow?.webContents.send("core:log", {
+        ...stamped,
+        payload: part,
+        time: new Date().toISOString(),
+      });
+    }
   });
 
   const settings = loadSettings();

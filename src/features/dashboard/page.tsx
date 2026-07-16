@@ -38,6 +38,9 @@ const DEFAULT_WIDGETS: DashboardWidgetId[] = [
   "mode",
   "network",
   "traffic",
+  "memory",
+  "publicIp",
+  "networkCheck",
 ];
 
 export function DashboardPage() {
@@ -51,6 +54,13 @@ export function DashboardPage() {
   const [history, setHistory] = useState<
     { t: number; up: number; down: number }[]
   >([]);
+  const [memory, setMemory] = useState<number | null>(null);
+  const [publicIp, setPublicIp] = useState<string>("—");
+  const [netCheck, setNetCheck] = useState<{
+    ok?: boolean;
+    ms?: number;
+    error?: string;
+  }>({});
   const { t } = useI18n();
 
   const running = core?.status === "running";
@@ -72,6 +82,44 @@ export function DashboardPage() {
       return next.slice(-60);
     });
   }, [traffic.up, traffic.down]);
+
+  useEffect(() => {
+    if (!running) {
+      setMemory(null);
+      return;
+    }
+    let cancelled = false;
+    async function tick() {
+      try {
+        const snap = await getApi().getConnections();
+        if (!cancelled) setMemory(snap.memory ?? null);
+      } catch {
+        /* ignore */
+      }
+    }
+    void tick();
+    const id = window.setInterval(() => void tick(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [running]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadIp() {
+      try {
+        const res = await getApi().getPublicIp();
+        if (!cancelled) setPublicIp(res.ok ? res.ip : "—");
+      } catch {
+        if (!cancelled) setPublicIp("—");
+      }
+    }
+    void loadIp();
+    return () => {
+      cancelled = true;
+    };
+  }, [running]);
 
   const chartData = useMemo(
     () =>
@@ -370,6 +418,83 @@ export function DashboardPage() {
                 />
               </div>
             </Card>
+          ) : null}
+        </section>
+      ) : null}
+
+      {show("memory") || show("publicIp") || show("networkCheck") ? (
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {show("memory") ? (
+            <MetricCard
+              label={t.dashboard.memory}
+              value={
+                memory != null && memory > 0
+                  ? formatBytes(memory)
+                  : running
+                    ? "…"
+                    : "—"
+              }
+              hint={t.dashboard.memoryHint}
+            />
+          ) : null}
+          {show("publicIp") ? (
+            <MetricCard
+              label={t.dashboard.publicIp}
+              value={publicIp}
+              hint={t.dashboard.publicIpHint}
+              action={
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const res = await getApi().getPublicIp();
+                        setPublicIp(res.ok ? res.ip : "—");
+                      } catch {
+                        setPublicIp("—");
+                      }
+                    })();
+                  }}
+                >
+                  {t.common.refresh}
+                </Button>
+              }
+            />
+          ) : null}
+          {show("networkCheck") ? (
+            <MetricCard
+              label={t.dashboard.networkCheck}
+              value={
+                netCheck.ms != null
+                  ? `${netCheck.ok ? "OK" : "FAIL"} · ${netCheck.ms}ms`
+                  : "—"
+              }
+              hint={netCheck.error || t.dashboard.networkCheckHint}
+              action={
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const res = await getApi().networkCheck();
+                        setNetCheck(res);
+                      } catch (e) {
+                        setNetCheck({
+                          ok: false,
+                          error: e instanceof Error ? e.message : String(e),
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  {t.dashboard.runCheck}
+                </Button>
+              }
+            />
           ) : null}
         </section>
       ) : null}

@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs";
+import path from "node:path";
+import { app } from "electron";
 import { DEFAULT_BYPASS } from "../shared/types";
 
 const execFileAsync = promisify(execFile);
@@ -115,4 +118,98 @@ export async function disableSystemProxy() {
 export function invalidateProxyCache() {
   servicesCache = null;
   lastApplied = null;
+}
+
+// ── System DNS (macOS networksetup) ─────────────────────────────────────────
+
+type DnsBackup = Record<string, string[]>;
+
+function dnsBackupPath() {
+  return path.join(app.getPath("userData"), "system-dns-backup.json");
+}
+
+function readDnsBackup(): DnsBackup {
+  try {
+    const p = dnsBackupPath();
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, "utf8")) as DnsBackup;
+  } catch {
+    return {};
+  }
+}
+
+function writeDnsBackup(data: DnsBackup) {
+  try {
+    fs.writeFileSync(dnsBackupPath(), JSON.stringify(data, null, 2), "utf8");
+  } catch {
+    /* ignore */
+  }
+}
+
+async function getDnsServers(service: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(NETWORKSETUP, [
+      "-getdnsservers",
+      service,
+    ]);
+    const lines = stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (lines.some((l) => /aren't any DNS/i.test(l) || /There aren/i.test(l))) {
+      return [];
+    }
+    return lines.filter((l) => !/DNS Servers/i.test(l));
+  } catch {
+    return [];
+  }
+}
+
+/** Apply DNS servers to all active network services; backup previous values. */
+export async function applySystemDns(servers: string[]) {
+  const list = servers.map((s) => s.trim()).filter(Boolean);
+  if (!list.length) {
+    throw new Error("DNS server list is empty");
+  }
+  const services = await listServices();
+  const backup = readDnsBackup();
+  const shouldBackup = Object.keys(backup).length === 0;
+
+  await Promise.all(
+    services.map(async (service) => {
+      if (shouldBackup) {
+        backup[service] = await getDnsServers(service);
+      }
+      await runNetworksetupScript([
+        ns("-setdnsservers", service, ...list),
+      ]).catch(() => undefined);
+    }),
+  );
+  if (shouldBackup) writeDnsBackup(backup);
+}
+
+/** Restore DNS from backup (or clear to DHCP/empty). */
+export async function restoreSystemDns() {
+  const services = await listServices();
+  const backup = readDnsBackup();
+  await Promise.all(
+    services.map(async (service) => {
+      const prev = backup[service];
+      if (prev && prev.length) {
+        await runNetworksetupScript([
+          ns("-setdnsservers", service, ...prev),
+        ]).catch(() => undefined);
+      } else {
+        await runNetworksetupScript([
+          ns("-setdnsservers", service, "Empty"),
+        ]).catch(() => undefined);
+      }
+    }),
+  );
+  try {
+    const bp = dnsBackupPath();
+    if (fs.existsSync(bp)) fs.unlinkSync(bp);
+  } catch {
+    /* ignore */
+  }
 }

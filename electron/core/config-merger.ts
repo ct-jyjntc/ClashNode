@@ -1,5 +1,10 @@
 import yaml from "js-yaml";
-import type { AppSettings, DnsSettings } from "../shared/types";
+import type {
+  AppSettings,
+  CustomProxyGroup,
+  DnsSettings,
+  MergeConfigOptions,
+} from "../shared/types";
 import { runConfigScript } from "./script-runner";
 import { readScriptContent } from "../store/scripts";
 
@@ -16,6 +21,9 @@ type Group = {
   type?: string;
   proxies?: string[];
   use?: string[];
+  icon?: string;
+  url?: string;
+  interval?: number;
   [key: string]: unknown;
 };
 
@@ -126,21 +134,99 @@ function buildDnsBlock(dns: DnsSettings): Record<string, unknown> {
   };
 }
 
+function mergeCustomProxies(
+  base: Record<string, unknown>,
+  custom: Array<Record<string, unknown>>,
+) {
+  if (!custom.length) return;
+  const proxies = Array.isArray(base.proxies)
+    ? ([...(base.proxies as Record<string, unknown>[])] as Record<
+        string,
+        unknown
+      >[])
+    : [];
+  for (const node of custom) {
+    if (!node || typeof node !== "object") continue;
+    const name = typeof node.name === "string" ? node.name : "";
+    if (!name) continue;
+    const idx = proxies.findIndex((p) => p && p.name === name);
+    if (idx >= 0) proxies[idx] = { ...proxies[idx], ...node };
+    else proxies.push({ ...node });
+  }
+  base.proxies = proxies;
+}
+
+function mergeCustomProxyProviders(
+  base: Record<string, unknown>,
+  custom: Record<string, Record<string, unknown>>,
+) {
+  const keys = Object.keys(custom);
+  if (!keys.length) return;
+  const providers =
+    base["proxy-providers"] && typeof base["proxy-providers"] === "object"
+      ? {
+          ...(base["proxy-providers"] as Record<
+            string,
+            Record<string, unknown>
+          >),
+        }
+      : ({} as Record<string, Record<string, unknown>>);
+  for (const [key, val] of Object.entries(custom)) {
+    if (!key || !val || typeof val !== "object") continue;
+    providers[key] = { ...(providers[key] ?? {}), ...val };
+  }
+  base["proxy-providers"] = providers;
+}
+
+function applyRules(
+  base: Record<string, unknown>,
+  globalPrepend: string[],
+  prepend: string[],
+  append: string[],
+) {
+  let rules = Array.isArray(base.rules)
+    ? ([...(base.rules as unknown[])] as unknown[])
+    : ["MATCH,DIRECT"];
+  if (!rules.length) rules = ["MATCH,DIRECT"];
+
+  const head = [...globalPrepend, ...prepend].filter(
+    (r) => typeof r === "string" && r.trim(),
+  );
+  if (head.length) {
+    rules = [...head, ...rules];
+  }
+
+  const tail = append
+    .map((r) => (typeof r === "string" ? r.trim() : ""))
+    .filter(Boolean);
+  if (tail.length) {
+    // Insert before final MATCH* rule if present
+    let matchIdx = -1;
+    for (let i = rules.length - 1; i >= 0; i--) {
+      const r = String(rules[i] ?? "");
+      if (/^MATCH\b/i.test(r) || r.toUpperCase().startsWith("MATCH,")) {
+        matchIdx = i;
+        break;
+      }
+    }
+    if (matchIdx >= 0) {
+      rules = [
+        ...rules.slice(0, matchIdx),
+        ...tail,
+        ...rules.slice(matchIdx),
+      ];
+    } else {
+      rules = [...rules, ...tail];
+    }
+  }
+  base.rules = rules;
+}
+
 export async function mergeConfig(
   profileYaml: string | null,
   settings: AppSettings,
   secret: string,
-  options?: {
-    prependRules?: string[];
-    scriptId?: string | null;
-    customProxyGroups?: Array<{
-      name: string;
-      type: string;
-      proxies: string[];
-      url?: string;
-      interval?: number;
-    }>;
-  },
+  options?: MergeConfigOptions,
 ): Promise<{ yaml: string; warnings: string[] }> {
   let base: Record<string, unknown> = { ...MINIMAL_BASE };
   if (profileYaml?.trim()) {
@@ -189,13 +275,37 @@ export async function mergeConfig(
   else delete base["redir-port"];
   if (settings.ports?.tproxyPort) base["tproxy-port"] = settings.ports.tproxyPort;
   else delete base["tproxy-port"];
-  base["unified-delay"] = base["unified-delay"] ?? true;
-  base["tcp-concurrent"] = base["tcp-concurrent"] ?? true;
-  base["find-process-mode"] = base["find-process-mode"] ?? "strict";
+
+  base["unified-delay"] = settings.unifiedDelay ?? true;
+  base["tcp-concurrent"] = settings.tcpConcurrent ?? true;
+  base["find-process-mode"] = settings.findProcessMode ?? "strict";
+  base["keep-alive-interval"] = settings.keepAliveInterval ?? 30;
+  base["geodata-loader"] = settings.geodataLoader ?? "memconservative";
+  if (settings.globalUa?.trim()) {
+    base["global-ua"] = settings.globalUa.trim();
+  }
+
+  if (settings.hosts && Object.keys(settings.hosts).length > 0) {
+    const prevHosts =
+      base.hosts && typeof base.hosts === "object" && !Array.isArray(base.hosts)
+        ? (base.hosts as Record<string, string>)
+        : {};
+    base.hosts = { ...prevHosts, ...settings.hosts };
+  }
+
+  if (settings.geoxUrl) {
+    const gx = settings.geoxUrl;
+    if (gx.geoip || gx.geosite || gx.mmdb || gx.asn) {
+      base["geox-url"] = {
+        geoip: gx.geoip,
+        geosite: gx.geosite,
+        mmdb: gx.mmdb,
+        asn: gx.asn,
+      };
+    }
+  }
 
   // Align with FlClash desktop TUN patch.
-  // - macOS: device name without utun* prefix (mihomo owns utunN)
-  // - Windows: Meta stack + auto-route (Wintun)
   const prevTun =
     (base.tun as Record<string, unknown> | undefined) ??
     ({} as Record<string, unknown>);
@@ -210,11 +320,9 @@ export async function mergeConfig(
     "strict-route": prevTun["strict-route"] ?? false,
   };
   if (process.platform === "win32") {
-    // Help Wintun users; mihomo loads wintun.dll from binary dir when present
     (base.tun as Record<string, unknown>)["auto-redirect"] =
       prevTun["auto-redirect"] ?? true;
   }
-  // desktop: clear route-address so mihomo owns full route table via auto-route
   delete (base.tun as Record<string, unknown>)["route-address"];
 
   const hasProfileDns =
@@ -229,13 +337,15 @@ export async function mergeConfig(
     base.dns = { ...profileDns, enable: false };
   }
 
-  if (!Array.isArray(base.rules) || base.rules.length === 0) {
-    base.rules = ["MATCH,DIRECT"];
+  // custom proxies / providers before groups so members resolve
+  if (options?.customProxies?.length) {
+    mergeCustomProxies(base, options.customProxies);
   }
-
-  if (options?.prependRules?.length) {
-    const existing = Array.isArray(base.rules) ? (base.rules as unknown[]) : [];
-    base.rules = [...options.prependRules, ...existing];
+  if (
+    options?.customProxyProviders &&
+    Object.keys(options.customProxyProviders).length
+  ) {
+    mergeCustomProxyProviders(base, options.customProxyProviders);
   }
 
   // Visual custom proxy groups — append / replace by name
@@ -243,7 +353,7 @@ export async function mergeConfig(
     const groups = Array.isArray(base["proxy-groups"])
       ? ([...(base["proxy-groups"] as Group[])] as Group[])
       : [];
-    for (const g of options.customProxyGroups) {
+    for (const g of options.customProxyGroups as CustomProxyGroup[]) {
       if (!g?.name) continue;
       const idx = groups.findIndex((x) => x?.name === g.name);
       const entry: Group = {
@@ -251,7 +361,13 @@ export async function mergeConfig(
         type: g.type || "select",
         proxies: Array.isArray(g.proxies) ? g.proxies : [],
       };
-      if (g.type === "url-test" || g.type === "fallback") {
+      if (g.use?.length) entry.use = g.use;
+      if (g.icon?.trim()) entry.icon = g.icon.trim();
+      if (
+        g.type === "url-test" ||
+        g.type === "fallback" ||
+        g.type === "load-balance"
+      ) {
         entry.url = g.url || "http://www.gstatic.com/generate_204";
         entry.interval = g.interval || 300;
       }
@@ -259,6 +375,16 @@ export async function mergeConfig(
       else groups.push(entry);
     }
     base["proxy-groups"] = groups;
+  }
+
+  const globalPrepend =
+    options?.globalPrependRules ?? settings.globalPrependRules ?? [];
+  const prepend = options?.prependRules ?? [];
+  const append = options?.appendRules ?? [];
+  applyRules(base, globalPrepend, prepend, append);
+
+  if (!Array.isArray(base.rules) || base.rules.length === 0) {
+    base.rules = ["MATCH,DIRECT"];
   }
 
   const profileBlock =

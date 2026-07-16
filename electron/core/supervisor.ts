@@ -113,8 +113,12 @@ export class CoreSupervisor extends EventEmitter {
         prependRules: current?.customRules?.length
           ? current.customRules
           : current?.prependRules,
+        appendRules: current?.appendRules,
         scriptId: current?.scriptId,
         customProxyGroups: current?.customProxyGroups,
+        customProxies: current?.customProxies,
+        customProxyProviders: current?.customProxyProviders,
+        globalPrependRules: settings.globalPrependRules,
       },
     );
     const configPath = getConfigPath();

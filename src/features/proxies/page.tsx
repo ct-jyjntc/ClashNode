@@ -5,8 +5,9 @@ import { PageHeader } from "@/shared/components/page-header";
 import {
   ListPage,
   ListPanelPlaceholder,
-  TABLE_HEAD_CLASS,
-  TABLE_ROW_CLASS,
+  tableHeadClass,
+  tableRowClass,
+  type TableDensity,
 } from "@/shared/components/list-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,8 @@ const GROUP_TYPES = new Set([
 
 export function ProxiesPage() {
   const core = useAppStore((s) => s.core);
+  const settings = useAppStore((s) => s.settings);
+  const setSettings = useAppStore((s) => s.setSettings);
   const { t } = useI18n();
   const [tab, setTab] = useState<"nodes" | "providers">("nodes");
   const [proxies, setProxies] = useState<Record<string, ProxyNode>>({});
@@ -43,6 +46,29 @@ export function ProxiesPage() {
   const [providerBusy, setProviderBusy] = useState<string | null>(null);
 
   const running = core?.status === "running";
+  const sortMode = settings?.proxiesUi?.sort ?? "default";
+  const sortAsc = settings?.proxiesUi?.sortAsc !== false;
+  const density: TableDensity =
+    settings?.proxiesUi?.density === "compact" ? "compact" : "comfortable";
+  const headClass = tableHeadClass(density);
+  const rowClass = tableRowClass(density);
+
+  async function patchProxiesUi(
+    patch: Partial<{ sort: "default" | "name" | "delay" | "type"; sortAsc: boolean; density: "comfortable" | "compact" }>,
+  ) {
+    try {
+      const next = await getApi().updateSettings({
+        proxiesUi: {
+          sort: patch.sort ?? sortMode,
+          sortAsc: patch.sortAsc ?? sortAsc,
+          density: patch.density ?? density,
+        },
+      });
+      setSettings(next);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   const load = useCallback(async () => {
     if (!running) {
@@ -92,10 +118,32 @@ export function ProxiesPage() {
   const members = useMemo(() => {
     if (!group?.all) return [];
     const q = query.trim().toLowerCase();
-    return group.all
+    const list = group.all
       .map((name) => proxies[name] || { name, type: "Unknown" })
       .filter((n) => !q || n.name.toLowerCase().includes(q));
-  }, [group, proxies, query]);
+
+    const delayOf = (n: ProxyNode) => {
+      if (delays[n.name] != null) return delays[n.name];
+      const hist = n.history;
+      if (hist?.length) return hist[hist.length - 1]?.delay ?? 0;
+      return 0;
+    };
+
+    if (sortMode === "default") return list;
+    const sorted = [...list];
+    sorted.sort((a, b) => {
+      let cmp = 0;
+      if (sortMode === "name") cmp = a.name.localeCompare(b.name);
+      else if (sortMode === "type") cmp = (a.type || "").localeCompare(b.type || "");
+      else if (sortMode === "delay") {
+        const da = delayOf(a) || 999999;
+        const db = delayOf(b) || 999999;
+        cmp = da - db;
+      }
+      return sortAsc ? cmp : -cmp;
+    });
+    return sorted;
+  }, [group, proxies, query, sortMode, sortAsc, delays]);
 
   async function select(name: string) {
     if (!group) return;
@@ -200,14 +248,56 @@ export function ProxiesPage() {
               {t.proxies.refresh}
             </Button>
             {tab === "nodes" ? (
-              <Button
-                size="sm"
-                onClick={() => void testAll()}
-                disabled={testing || !group}
-              >
-                <Timer className="size-3.5" strokeWidth={1.8} />
-                {testing ? t.proxies.testing : t.proxies.testGroup}
-              </Button>
+              <>
+                <select
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                  value={sortMode}
+                  onChange={(e) =>
+                    void patchProxiesUi({
+                      sort: e.target.value as
+                        | "default"
+                        | "name"
+                        | "delay"
+                        | "type",
+                    })
+                  }
+                  aria-label={t.proxies.sort}
+                >
+                  <option value="default">{t.proxies.sortDefault}</option>
+                  <option value="name">{t.proxies.sortName}</option>
+                  <option value="delay">{t.proxies.sortDelay}</option>
+                  <option value="type">{t.proxies.sortType}</option>
+                </select>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void patchProxiesUi({ sortAsc: !sortAsc })}
+                >
+                  {sortAsc ? t.proxies.sortAsc : t.proxies.sortDesc}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    void patchProxiesUi({
+                      density:
+                        density === "compact" ? "comfortable" : "compact",
+                    })
+                  }
+                >
+                  {density === "compact"
+                    ? t.proxies.densityCompact
+                    : t.proxies.densityComfortable}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void testAll()}
+                  disabled={testing || !group}
+                >
+                  <Timer className="size-3.5" strokeWidth={1.8} />
+                  {testing ? t.proxies.testing : t.proxies.testGroup}
+                </Button>
+              </>
             ) : null}
           </>
         }
@@ -224,7 +314,7 @@ export function ProxiesPage() {
           <Card className="flex min-h-0 flex-1 basis-0 flex-col overflow-hidden">
             <div
               className={cn(
-                TABLE_HEAD_CLASS,
+                headClass,
                 "grid grid-cols-[1.2fr_0.7fr_0.7fr_0.8fr_0.6fr_72px]",
               )}
             >
@@ -244,7 +334,7 @@ export function ProxiesPage() {
                     <div
                       key={p.name}
                       className={cn(
-                        TABLE_ROW_CLASS,
+                        rowClass,
                         "grid grid-cols-[1.2fr_0.7fr_0.7fr_0.8fr_0.6fr_72px]",
                       )}
                     >
@@ -349,7 +439,7 @@ export function ProxiesPage() {
           </div>
           <div
             className={cn(
-              TABLE_HEAD_CLASS,
+              headClass,
               "grid grid-cols-[1fr_100px_80px]",
             )}
           >
@@ -370,7 +460,7 @@ export function ProxiesPage() {
                     type="button"
                     onClick={() => void select(node.name)}
                     className={cn(
-                      TABLE_ROW_CLASS,
+                      rowClass,
                       "grid grid-cols-[1fr_100px_80px]",
                       selected && "bg-secondary/60",
                     )}

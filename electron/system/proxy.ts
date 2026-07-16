@@ -23,3 +23,18 @@ export async function disableSystemProxy() {
     return win.disableSystemProxy();
   }
 }
+
+export async function applySystemDns(servers: string[]) {
+  if (process.platform === "darwin") {
+    return mac.applySystemDns(servers);
+  }
+  // Windows/Linux: no-op for now
+  return;
+}
+
+export async function restoreSystemDns() {
+  if (process.platform === "darwin") {
+    return mac.restoreSystemDns();
+  }
+  return;
+}

@@ -2,14 +2,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Profile, ProfilesState, SubscriptionInfo } from "../shared/types";
+import { PROFILES_VERSION } from "../shared/types";
+import { profilesFileSchema } from "../shared/schemas";
 import {
   getProfilesDir,
   getProfilesStatePath,
-  readJsonFile,
+  readJsonFileSafe,
   writeJsonFile,
 } from "./paths";
+import { loadSettings } from "./settings";
 
-const EMPTY: ProfilesState = { currentId: null, items: [] };
+const EMPTY: ProfilesState = {
+  profilesVersion: PROFILES_VERSION,
+  currentId: null,
+  items: [],
+};
 
 /**
  * Many providers (incl. this one) return different YAML by User-Agent:
@@ -18,19 +25,48 @@ const EMPTY: ProfilesState = { currentId: null, items: [] };
  * Match FlClash's request UA style.
  */
 function subscriptionUa() {
+  try {
+    const s = loadSettings();
+    if (s.globalUa?.trim()) {
+      // Keep platform tag so providers still return full lists
+      const plat = process.platform === "win32" ? "windows" : "darwin";
+      const base = s.globalUa.trim();
+      if (/Platform\//i.test(base)) return base;
+      return `${base} Platform/${plat}`;
+    }
+  } catch {
+    /* settings may not be ready in pure tests */
+  }
   const plat = process.platform === "win32" ? "windows" : "darwin";
-  // Match FlClash-style UA so providers return full proxy lists
   return `clash.meta/v1.19.28 FlClash/v0.8.94 clash-verge Platform/${plat}`;
 }
 
+export function migrateProfilesState(raw: ProfilesState): ProfilesState {
+  const version =
+    typeof raw.profilesVersion === "number" ? raw.profilesVersion : 0;
+  const items = Array.isArray(raw.items) ? raw.items : [];
+  return {
+    profilesVersion: PROFILES_VERSION,
+    currentId: raw.currentId ?? null,
+    items,
+  };
+}
+
 export function loadProfilesState(): ProfilesState {
-  const state = readJsonFile<ProfilesState>(getProfilesStatePath(), EMPTY);
-  if (!Array.isArray(state.items)) return EMPTY;
-  return state;
+  const raw = readJsonFileSafe<ProfilesState>(
+    getProfilesStatePath(),
+    EMPTY,
+    (data) => profilesFileSchema.safeParse(data).success,
+  );
+  if (!Array.isArray(raw.items)) return EMPTY;
+  return migrateProfilesState(raw);
 }
 
 export function saveProfilesState(state: ProfilesState) {
-  writeJsonFile(getProfilesStatePath(), state);
+  writeJsonFile(getProfilesStatePath(), {
+    ...state,
+    profilesVersion: PROFILES_VERSION,
+  });
 }
 
 export function getProfileYamlPath(id: string) {
@@ -319,6 +355,40 @@ export function setCustomRules(profileId: string, rules: string[]) {
   return p;
 }
 
+export function setAppendRules(profileId: string, rules: string[]) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.appendRules = rules.map((r) => r.trim()).filter(Boolean);
+  saveProfilesState(state);
+  return p;
+}
+
+export function setCustomProxies(
+  profileId: string,
+  proxies: Array<Record<string, unknown>>,
+) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.customProxies = Array.isArray(proxies) ? proxies : [];
+  saveProfilesState(state);
+  return p;
+}
+
+export function setCustomProxyProviders(
+  profileId: string,
+  providers: Record<string, Record<string, unknown>>,
+) {
+  const state = loadProfilesState();
+  const p = state.items.find((x) => x.id === profileId);
+  if (!p) throw new Error("Profile not found");
+  p.customProxyProviders =
+    providers && typeof providers === "object" ? providers : {};
+  saveProfilesState(state);
+  return p;
+}
+
 export function reorderProfiles(ids: string[]) {
   const state = loadProfilesState();
   const map = new Map(state.items.map((p) => [p.id, p]));
@@ -337,7 +407,7 @@ export function reorderProfiles(ids: string[]) {
 }
 
 /** Some providers return base64-encoded YAML or plain share-links. */
-function maybeDecodeSubscription(text: string): string {
+export function maybeDecodeSubscription(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return text;
 
@@ -379,7 +449,7 @@ function maybeDecodeSubscription(text: string): string {
   return text;
 }
 
-function shareLinksToMinimalYaml(body: string): string {
+export function shareLinksToMinimalYaml(body: string): string {
   // Keep as comment block — full URI parsing is provider-specific.
   // User should prefer Clash YAML subscriptions.
   return [
@@ -397,7 +467,7 @@ function shareLinksToMinimalYaml(body: string): string {
   ].join("\n");
 }
 
-function assertLooksLikeClashConfig(text: string) {
+export function assertLooksLikeClashConfig(text: string) {
   if (!/proxies|proxy-groups|proxy-providers|rules/i.test(text)) {
     throw new Error(
       "Downloaded content does not look like a Clash/mihomo YAML config",

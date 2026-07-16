@@ -23,6 +23,7 @@ interface AppStore {
   refreshSettings: () => Promise<void>;
   refreshProfiles: () => Promise<void>;
   pushLog: (line: LogLine) => void;
+  clearLogs: () => void;
   setTraffic: (t: TrafficSnapshot) => void;
   setCore: (s: CoreState) => void;
   setSettings: (s: AppSettings) => void;
@@ -72,9 +73,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ profiles: await getApi().getProfiles() });
   },
   pushLog: (line) => {
-    const logs = [...get().logs, line].slice(-500);
+    const stamped = {
+      ...line,
+      time: line.time || new Date().toISOString(),
+      type: line.type || "info",
+      payload: line.payload ?? "",
+    };
+    // split multi-line payloads so each row is one log line
+    const parts = String(stamped.payload)
+      .split(/\r?\n/)
+      .map((s) => s.trimEnd())
+      .filter((s) => s.length > 0);
+    if (parts.length <= 1) {
+      const logs = [...get().logs, stamped].slice(-500);
+      set({ logs });
+      return;
+    }
+    const extras = parts.map((payload) => ({
+      ...stamped,
+      payload,
+      time: new Date().toISOString(),
+    }));
+    const logs = [...get().logs, ...extras].slice(-500);
     set({ logs });
   },
+  clearLogs: () => set({ logs: [] }),
   setTraffic: (traffic) => set({ traffic }),
   setCore: (core) => set({ core }),
   setSettings: (settings) => {

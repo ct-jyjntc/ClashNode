@@ -23,7 +23,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useAppStore } from "@/shared/hooks/use-app-state";
 import { useI18n } from "@/shared/i18n";
 
 const STORAGE_KEY = "clashnode.sidebarCollapsed";
@@ -54,7 +53,6 @@ export function AppShell() {
     }
   });
   const [isMac] = useState(detectIsMac);
-  const core = useAppStore((s) => s.core);
   const location = useLocation();
   const { t } = useI18n();
 
@@ -68,7 +66,6 @@ export function AppShell() {
   // Toggle (~28) + gap + "ClashNode" title — always shown (even when rail is collapsed)
   const titleClusterW = 28 + 6 + 88; // icon button + gap + label
   const headerClusterW = lightsPad + titleClusterW;
-  const running = core?.status === "running";
 
   const nav = [
     { to: "/", label: t.nav.dashboard, icon: LayoutDashboard },
@@ -180,33 +177,6 @@ export function AppShell() {
             })}
           </nav>
 
-          <div className="mt-4 space-y-2 px-2 pb-4" style={{ width }}>
-            <div
-              className={cn(
-                "flex items-center gap-2 rounded-md bg-secondary/55 px-2.5 py-2",
-                collapsed && "justify-center px-0",
-              )}
-            >
-              <span
-                className={cn(
-                  "size-1.5 rounded-full",
-                  running ? "bg-success" : "bg-muted-foreground/50",
-                )}
-              />
-              {!collapsed ? (
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs">
-                    {core?.status ?? "unknown"}
-                  </p>
-                  <p className="truncate text-[11px] text-muted-foreground">
-                    {core?.version
-                      ? `mihomo ${core.version}`
-                      : t.shell.coreIdle}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          </div>
         </aside>
 
         <div
@@ -241,7 +211,7 @@ export function AppShell() {
             Asymmetric horizontal padding: left is tighter so the gap after the
             sidebar matches the right window edge more closely.
           */}
-          <main className="mx-auto flex w-full min-h-0 max-w-[1280px] flex-1 basis-0 flex-col overflow-y-auto pb-6 pl-3 pr-5 pt-1 sm:pl-4 sm:pr-8">
+          <main className="mx-auto flex w-full min-h-0 min-w-0 max-w-[1280px] flex-1 basis-0 flex-col overflow-x-hidden overflow-y-auto pb-6 pl-3 pr-5 pt-1 sm:pl-4 sm:pr-8">
             <Outlet />
           </main>
         </div>

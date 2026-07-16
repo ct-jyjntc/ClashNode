@@ -17,6 +17,7 @@ import {
 import { getApi } from "@/shared/lib/api";
 import { formatDate } from "@/shared/lib/utils";
 import { useI18n } from "@/shared/i18n";
+import { CodeEditor } from "@/shared/components/code-editor";
 import { cn } from "@/shared/lib/utils";
 
 type ScriptItem = {
@@ -193,11 +194,12 @@ export function ScriptsPage() {
               <p className="mb-2 shrink-0 text-[11px] text-muted-foreground">
                 {t.scripts.hint}
               </p>
-              <textarea
+              <CodeEditor
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                spellCheck={false}
-                className="min-h-0 w-full flex-1 resize-none rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onChange={setContent}
+                language="javascript"
+                minHeight="420px"
+                className="min-h-0 flex-1"
               />
             </>
           ) : (

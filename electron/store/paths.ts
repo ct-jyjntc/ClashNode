@@ -195,6 +195,37 @@ export function ensureWintunBesideMihomo(
   };
 }
 
+
+/**
+ * Read mihomo version from the binary without starting the core.
+ * Prefer `mihomo -v` (MetaCubeX prints "mihomo version vX.Y.Z ...").
+ */
+export async function getMihomoBinaryVersion(): Promise<string | null> {
+  const binary = getMihomoPath();
+  if (!fs.existsSync(binary)) return null;
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    const { stdout, stderr } = await execFileAsync(binary, ["-v"], {
+      timeout: 5000,
+      windowsHide: true,
+      maxBuffer: 64 * 1024,
+    });
+    const textOut = `${stdout || ""}\n${stderr || ""}`;
+    // Common forms:
+    //   "Mihomo Meta v1.19.28 ..."
+    //   "mihomo version v1.19.28"
+    //   "v1.19.28"
+    const m =
+      textOut.match(/\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\b/) ||
+      textOut.match(/version\s+v?(\d+\.\d+\.\d+)/i);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -210,7 +241,55 @@ export function readJsonFile<T>(filePath: string, fallback: T): T {
   }
 }
 
+/**
+ * Read JSON with optional schema validation.
+ * On parse/validation failure: backup corrupt file and return fallback.
+ */
+export function readJsonFileSafe<T>(
+  filePath: string,
+  fallback: T,
+  validate?: (data: unknown) => boolean,
+): T {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const data = JSON.parse(raw) as unknown;
+    if (validate && !validate(data)) {
+      backupCorruptFile(filePath);
+      return fallback;
+    }
+    return data as T;
+  } catch {
+    backupCorruptFile(filePath);
+    return fallback;
+  }
+}
+
+function backupCorruptFile(filePath: string) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const bak = `${filePath}.bak.${Date.now()}`;
+    fs.copyFileSync(filePath, bak);
+  } catch {
+    /* ignore backup failures */
+  }
+}
+
+/** Atomic JSON write: temp file in same dir → rename. */
 export function writeJsonFile(filePath: string, data: unknown) {
   ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  const payload = JSON.stringify(data, null, 2);
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, payload, "utf8");
+    fs.renameSync(tmp, filePath);
+  } catch (e) {
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    // Fallback for cross-device rename edge cases
+    fs.writeFileSync(filePath, payload, "utf8");
+  }
 }

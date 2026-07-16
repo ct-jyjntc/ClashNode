@@ -15,6 +15,7 @@ import {
 import { useTheme } from "next-themes";
 import { PageHeader } from "@/shared/components/page-header";
 import { HotkeyRecorder } from "@/shared/components/hotkey-recorder";
+import { CodeEditor } from "@/shared/components/code-editor";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -143,6 +144,7 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [paths, setPaths] = useState<AppPaths | null>(null);
   const [version, setVersion] = useState<AppVersion | null>(null);
+  const [mihomoVersion, setMihomoVersion] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
   const [bypassText, setBypassText] = useState("");
   const [defaultNsText, setDefaultNsText] = useState("");
@@ -375,9 +377,22 @@ export function SettingsPage() {
     try {
       const r = await getApi().checkUpdate();
       setUpdateInfo(r);
-      if (r.error) toast.error(r.error);
-      else if (r.hasUpdate) toast.success(t.settings.updateAvailable);
-      else toast.success(t.settings.updateNone);
+      if (r.current && r.current !== "unknown") setMihomoVersion(r.current);
+      if (r.error) {
+        toast.error(r.error);
+        return;
+      }
+      const cur = r.current || "unknown";
+      const latest = r.latest || "—";
+      if (r.hasUpdate) {
+        toast.success(
+          `${t.settings.updateAvailable} · ${t.settings.updateCurrent} ${cur} · ${t.settings.updateLatest} ${latest}`,
+        );
+      } else {
+        toast.success(
+          `${t.settings.updateNone} · ${t.settings.updateCurrent} ${cur} · ${t.settings.updateLatest} ${latest}`,
+        );
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -389,11 +404,38 @@ export function SettingsPage() {
     setUpdateBusy(true);
     try {
       const r = await getApi().checkAppUpdate();
-      if (!r.ok) toast.error(r.error || t.settings.updateNone);
-      else if (r.version) {
-        setAppUpdateVersion(r.version);
-        toast.success(`${t.settings.updateAvailable}: ${r.version}`);
-      } else toast.success(t.settings.updateNone);
+      if (!r.ok) {
+        toast.error(r.error || t.settings.updateNone, {
+          action: r.htmlUrl
+            ? {
+                label: t.settings.updateOpen,
+                onClick: () => void window.open(r.htmlUrl!, "_blank"),
+              }
+            : undefined,
+        });
+        return;
+      }
+      if (r.version) setAppUpdateVersion(r.version);
+      const cur = r.current ?? version?.app ?? "?";
+      if (r.hasUpdate && r.version) {
+        toast.success(
+          `${t.settings.updateAvailable}: ${r.version} · ${t.settings.updateCurrent} ${cur}`,
+          {
+            action: r.htmlUrl
+              ? {
+                  label: t.settings.updateOpen,
+                  onClick: () => void window.open(r.htmlUrl!, "_blank"),
+                }
+              : undefined,
+          },
+        );
+      } else if (r.version) {
+        toast.success(
+          `${t.settings.updateNone} · ${t.settings.updateCurrent} ${cur} · ${t.settings.updateLatest} ${r.version}`,
+        );
+      } else {
+        toast.success(t.settings.updateNone);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1016,9 +1058,34 @@ export function SettingsPage() {
               "mode",
               "network",
               "traffic",
+              "memory",
+              "publicIp",
+              "networkCheck",
             ] as DashboardWidgetId[]
           ).map((id) => {
             const on = (draft.dashboard?.widgets ?? []).includes(id);
+            const label =
+              id === "memory"
+                ? t.dashboard.memory
+                : id === "publicIp"
+                  ? t.dashboard.publicIp
+                  : id === "networkCheck"
+                    ? t.dashboard.networkCheck
+                    : id === "status"
+                      ? t.dashboard.status
+                      : id === "upload"
+                        ? t.dashboard.upload
+                        : id === "download"
+                          ? t.dashboard.download
+                          : id === "port"
+                            ? t.dashboard.mixedPort
+                            : id === "mode"
+                              ? t.dashboard.outboundMode
+                              : id === "network"
+                                ? t.dashboard.network
+                                : id === "traffic"
+                                  ? t.dashboard.trafficHistory
+                                  : id;
             return (
               <Button
                 key={id}
@@ -1028,7 +1095,7 @@ export function SettingsPage() {
                 className={on ? "" : "text-muted-foreground"}
                 onClick={() => toggleWidget(id)}
               >
-                {id}
+                {label}
               </Button>
             );
           })}
@@ -1191,10 +1258,11 @@ export function SettingsPage() {
             {t.settings.backupHint}
           </p>
           <div className="space-y-2 pt-2">
-            <h3 className="text-sm font-medium">{t.settings.about}</h3>
+            <h3 className="text-sm font-medium">{t.settings.aboutTitle}</h3>
+            <p className="text-[11px] text-muted-foreground">{t.settings.aboutDesc}</p>
             <div className="grid gap-1 font-mono text-[11px] text-muted-foreground sm:grid-cols-2">
               <p>ClashNode {version?.app ?? "0.1.0"}</p>
-              <p>mihomo {core?.version ?? "—"}</p>
+              <p>mihomo {core?.version ?? mihomoVersion ?? "—"}</p>
               <p>Electron {version?.electron ?? "—"}</p>
               <p>
                 {version?.platform ?? "—"}/{version?.arch ?? "—"} · Node{" "}
@@ -1356,6 +1424,237 @@ export function SettingsPage() {
       </Card>
 
       <Card className="space-y-3 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t.settings.advancedMihomo}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t.settings.advancedMihomoHint}
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label>{t.settings.keepAliveInterval}</Label>
+            <Input
+              type="number"
+              value={draft.keepAliveInterval ?? 30}
+              onChange={(e) =>
+                patch("keepAliveInterval", Number(e.target.value) || 30)
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t.settings.geodataLoader}</Label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+              value={draft.geodataLoader ?? "memconservative"}
+              onChange={(e) =>
+                patch(
+                  "geodataLoader",
+                  e.target.value as AppSettings["geodataLoader"],
+                )
+              }
+            >
+              <option value="memconservative">memconservative</option>
+              <option value="standard">standard</option>
+            </select>
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label>{t.settings.globalUa}</Label>
+            <Input
+              value={draft.globalUa ?? ""}
+              onChange={(e) => patch("globalUa", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label>{t.settings.hosts}</Label>
+            <textarea
+              className="h-24 w-full rounded-md border border-input bg-secondary/55 p-2 font-mono text-[11px]"
+              value={Object.entries(draft.hosts ?? {})
+                .map(([k, v]) => `${k}=${v}`)
+                .join("\n")}
+              onChange={(e) => {
+                const hosts: Record<string, string> = {};
+                for (const line of e.target.value.split("\n")) {
+                  const tline = line.trim();
+                  if (!tline) continue;
+                  const eq = tline.indexOf("=");
+                  if (eq > 0) {
+                    hosts[tline.slice(0, eq).trim()] = tline.slice(eq + 1).trim();
+                    continue;
+                  }
+                  const parts = tline.split(/\s+/);
+                  if (parts.length >= 2) hosts[parts[0]] = parts[1];
+                }
+                patch("hosts", hosts);
+              }}
+              placeholder={"example.com=1.2.3.4"}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {t.settings.hostsHint}
+            </p>
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label>{t.settings.globalPrependRules}</Label>
+            <textarea
+              className="h-24 w-full rounded-md border border-input bg-secondary/55 p-2 font-mono text-[11px]"
+              value={(draft.globalPrependRules ?? []).join("\n")}
+              onChange={(e) =>
+                patch(
+                  "globalPrependRules",
+                  e.target.value
+                    .split("\n")
+                    .map((l) => l.trim())
+                    .filter(Boolean),
+                )
+              }
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {t.settings.globalPrependRulesHint}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          <label className="flex items-center gap-2 text-xs">
+            <Switch
+              checked={draft.unifiedDelay !== false}
+              onCheckedChange={(v) => patch("unifiedDelay", v)}
+            />
+            {t.settings.unifiedDelay}
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <Switch
+              checked={draft.tcpConcurrent !== false}
+              onCheckedChange={(v) => patch("tcpConcurrent", v)}
+            />
+            {t.settings.tcpConcurrent}
+          </label>
+        </div>
+        <div className="space-y-2">
+          <Label>{t.settings.findProcessMode}</Label>
+          <select
+            className="flex h-9 w-full max-w-xs rounded-md border border-input bg-background px-2 text-xs"
+            value={draft.findProcessMode ?? "strict"}
+            onChange={(e) =>
+              patch(
+                "findProcessMode",
+                e.target.value as AppSettings["findProcessMode"],
+              )
+            }
+          >
+            <option value="strict">strict</option>
+            <option value="always">always</option>
+            <option value="off">off</option>
+          </select>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(
+            [
+              ["geoip", draft.geoxUrl?.geoip],
+              ["geosite", draft.geoxUrl?.geosite],
+              ["mmdb", draft.geoxUrl?.mmdb],
+              ["asn", draft.geoxUrl?.asn],
+            ] as const
+          ).map(([key, val]) => (
+            <div key={key} className="space-y-1">
+              <Label className="text-[11px]">
+                {t.settings.geoxUrl} · {key}
+              </Label>
+              <Input
+                value={val ?? ""}
+                onChange={(e) =>
+                  patch("geoxUrl", {
+                    ...(draft.geoxUrl ?? {
+                      geoip: "",
+                      geosite: "",
+                      mmdb: "",
+                      asn: "",
+                    }),
+                    [key]: e.target.value,
+                  })
+                }
+                className="h-8 text-xs"
+              />
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {version?.platform === "darwin" ? (
+        <Card className="space-y-3 p-4 sm:p-5">
+          <div>
+            <h2 className="text-sm font-medium">{t.settings.systemDns}</h2>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t.settings.systemDnsHint}
+            </p>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+            <p className="text-xs">{t.settings.systemDns}</p>
+            <Switch
+              checked={!!draft.systemDns?.enabled}
+              onCheckedChange={(v) =>
+                patch("systemDns", {
+                  enabled: v,
+                  servers: draft.systemDns?.servers ?? ["223.5.5.5", "119.29.29.29"],
+                })
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t.settings.systemDnsServers}</Label>
+            <textarea
+              className="h-20 w-full rounded-md border border-input bg-secondary/55 p-2 font-mono text-[11px]"
+              value={(draft.systemDns?.servers ?? []).join("\n")}
+              onChange={(e) =>
+                patch("systemDns", {
+                  enabled: !!draft.systemDns?.enabled,
+                  servers: e.target.value
+                    .split("\n")
+                    .map((l) => l.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {t.settings.systemDnsServersHint}
+            </p>
+          </div>
+        </Card>
+      ) : null}
+
+      <Card className="space-y-3 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t.settings.developer}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t.settings.developerModeHint}
+          </p>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+          <p className="text-xs">{t.settings.developerMode}</p>
+          <Switch
+            checked={!!draft.developerMode}
+            onCheckedChange={(v) => patch("developerMode", v)}
+          />
+        </div>
+        {draft.developerMode ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void getApi().openDevTools()}
+            >
+              {t.settings.openDevtools}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void getApi().openPath("home")}
+            >
+              "userData"
+            </Button>
+          </div>
+        ) : null}
+      </Card>
+
+      <Card className="space-y-3 p-4 sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-medium">{t.settings.runtimeYaml}</h2>
@@ -1367,11 +1666,11 @@ export function SettingsPage() {
             {t.settings.applyYaml}
           </Button>
         </div>
-        <textarea
+        <CodeEditor
           value={configText}
-          onChange={(e) => setConfigText(e.target.value)}
-          spellCheck={false}
-          className="h-72 w-full resize-y rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          onChange={setConfigText}
+          language="yaml"
+          minHeight="288px"
         />
       </Card>
     </div>

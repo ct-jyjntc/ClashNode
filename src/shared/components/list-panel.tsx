@@ -21,6 +21,20 @@ export const TABLE_HEAD_CLASS =
 export const TABLE_ROW_CLASS =
   "flex h-9 w-full items-center gap-2 border-b border-border/40 px-3 text-left text-xs transition-colors hover:bg-secondary/40";
 
+export type TableDensity = "comfortable" | "compact";
+
+export function tableHeadClass(density: TableDensity = "comfortable") {
+  return density === "compact"
+    ? "flex h-7 shrink-0 items-center gap-2 border-b border-border/60 px-2 text-[11px] font-normal text-muted-foreground"
+    : TABLE_HEAD_CLASS;
+}
+
+export function tableRowClass(density: TableDensity = "comfortable") {
+  return density === "compact"
+    ? "flex h-7 w-full items-center gap-2 border-b border-border/40 px-2 text-left text-[11px] transition-colors hover:bg-secondary/40"
+    : TABLE_ROW_CLASS;
+}
+
 export function ListPanel({
   header,
   children,

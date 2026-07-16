@@ -9,6 +9,8 @@ import {
   FileUp,
   GripVertical,
   Layers,
+  Network,
+  Boxes,
   Link2,
   ListTree,
   Pencil,
@@ -42,6 +44,8 @@ import {
   extractSubscriptionUrl,
 } from "@/shared/lib/qr";
 import { useI18n } from "@/shared/i18n";
+import { CodeEditor } from "@/shared/components/code-editor";
+import yaml from "js-yaml";
 import type { CustomProxyGroup, Profile } from "@/entities/mihomo/types";
 
 export function ProfilesPage() {
@@ -73,6 +77,20 @@ export function ProfilesPage() {
   const [rulesName, setRulesName] = useState("");
   const [rulesText, setRulesText] = useState("");
   const [rulesBusy, setRulesBusy] = useState(false);
+  const [appendText, setAppendText] = useState("");
+  const [rulesTab, setRulesTab] = useState<"prepend" | "append">("prepend");
+
+  const [proxiesOpen, setProxiesOpen] = useState(false);
+  const [proxiesId, setProxiesId] = useState<string | null>(null);
+  const [proxiesName, setProxiesName] = useState("");
+  const [proxiesText, setProxiesText] = useState("[]");
+  const [proxiesBusy, setProxiesBusy] = useState(false);
+
+  const [providersOpen, setProvidersOpen] = useState(false);
+  const [providersId, setProvidersId] = useState<string | null>(null);
+  const [providersName, setProvidersName] = useState("");
+  const [providersText, setProvidersText] = useState("{}");
+  const [providersBusy, setProvidersBusy] = useState(false);
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewName, setPreviewName] = useState("");
@@ -251,6 +269,8 @@ export function ProfilesPage() {
         "\n",
       ),
     );
+    setAppendText((p.appendRules ?? []).join("\n"));
+    setRulesTab("prepend");
     setRulesOpen(true);
   }
 
@@ -262,7 +282,12 @@ export function ProfilesPage() {
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean);
+      const append = appendText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
       await getApi().setCustomRules(rulesId, rules);
+      await getApi().setAppendRules(rulesId, append);
       await refreshProfiles();
       setRulesOpen(false);
       toast.success(t.profiles.overwriteSaved);
@@ -270,6 +295,79 @@ export function ProfilesPage() {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setRulesBusy(false);
+    }
+  }
+
+
+  function openCustomProxies(p: Profile) {
+    setProxiesId(p.id);
+    setProxiesName(p.name);
+    try {
+      setProxiesText(
+        p.customProxies?.length
+          ? yaml.dump(p.customProxies, { lineWidth: -1 })
+          : "[]",
+      );
+    } catch {
+      setProxiesText("[]");
+    }
+    setProxiesOpen(true);
+  }
+
+  async function saveCustomProxies() {
+    if (!proxiesId) return;
+    setProxiesBusy(true);
+    try {
+      const parsed = yaml.load(proxiesText);
+      if (!Array.isArray(parsed)) throw new Error("Expected a YAML/JSON array");
+      await getApi().setCustomProxies(
+        proxiesId,
+        parsed as Array<Record<string, unknown>>,
+      );
+      await refreshProfiles();
+      setProxiesOpen(false);
+      toast.success(t.profiles.overwriteSaved);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProxiesBusy(false);
+    }
+  }
+
+  function openCustomProviders(p: Profile) {
+    setProvidersId(p.id);
+    setProvidersName(p.name);
+    try {
+      setProvidersText(
+        p.customProxyProviders && Object.keys(p.customProxyProviders).length
+          ? yaml.dump(p.customProxyProviders, { lineWidth: -1 })
+          : "{}",
+      );
+    } catch {
+      setProvidersText("{}");
+    }
+    setProvidersOpen(true);
+  }
+
+  async function saveCustomProviders() {
+    if (!providersId) return;
+    setProvidersBusy(true);
+    try {
+      const parsed = yaml.load(providersText);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Expected a YAML/JSON map");
+      }
+      await getApi().setCustomProxyProviders(
+        providersId,
+        parsed as Record<string, Record<string, unknown>>,
+      );
+      await refreshProfiles();
+      setProvidersOpen(false);
+      toast.success(t.profiles.overwriteSaved);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProvidersBusy(false);
     }
   }
 
@@ -283,6 +381,8 @@ export function ProfilesPage() {
         proxies: [...(g.proxies ?? [])],
         url: g.url,
         interval: g.interval,
+        icon: g.icon,
+        use: g.use ? [...g.use] : [],
       })),
     );
     setGroupsOpen(true);
@@ -308,6 +408,8 @@ export function ProfilesPage() {
             .filter(Boolean),
           url: g.url,
           interval: g.interval,
+          icon: g.icon?.trim() || undefined,
+          use: (g.use ?? []).map((x) => x.trim()).filter(Boolean),
         }))
         .filter((g) => g.name);
       await getApi().setCustomProxyGroups(groupsId, cleaned);
@@ -550,9 +652,26 @@ export function ProfilesPage() {
                       {(p.customRules ?? p.prependRules)?.length}
                     </Badge>
                   ) : null}
+                  {p.appendRules?.length ? (
+                    <Badge variant="secondary">
+                      {t.profiles.appendRules} · {p.appendRules.length}
+                    </Badge>
+                  ) : null}
                   {p.customProxyGroups?.length ? (
                     <Badge variant="secondary">
                       {t.profiles.customGroups} · {p.customProxyGroups.length}
+                    </Badge>
+                  ) : null}
+                  {p.customProxies?.length ? (
+                    <Badge variant="secondary">
+                      {t.profiles.customProxies} · {p.customProxies.length}
+                    </Badge>
+                  ) : null}
+                  {p.customProxyProviders &&
+                  Object.keys(p.customProxyProviders).length ? (
+                    <Badge variant="secondary">
+                      {t.profiles.customProviders} ·{" "}
+                      {Object.keys(p.customProxyProviders).length}
                     </Badge>
                   ) : null}
                   {p.scriptId ? (
@@ -622,6 +741,26 @@ export function ProfilesPage() {
                   title={t.profiles.customGroups}
                 >
                   <Layers className="size-3.5" strokeWidth={1.8} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  onClick={() => openCustomProxies(p)}
+                  aria-label={t.profiles.customProxies}
+                  title={t.profiles.customProxies}
+                >
+                  <Network className="size-3.5" strokeWidth={1.8} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  onClick={() => openCustomProviders(p)}
+                  aria-label={t.profiles.customProviders}
+                  title={t.profiles.customProviders}
+                >
+                  <Boxes className="size-3.5" strokeWidth={1.8} />
                 </Button>
                 <Button
                   variant="ghost"
@@ -804,11 +943,11 @@ export function ProfilesPage() {
             </DialogTitle>
             <DialogDescription>{t.profiles.previewDesc}</DialogDescription>
           </DialogHeader>
-          <textarea
-            readOnly
+          <CodeEditor
             value={previewText}
-            spellCheck={false}
-            className="h-[min(60vh,480px)] w-full resize-y rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5"
+            language="yaml"
+            readOnly
+            minHeight="360px"
           />
           <DialogFooter>
             <Button
@@ -903,13 +1042,37 @@ export function ProfilesPage() {
               {t.profiles.overwriteRulesHint}
             </DialogDescription>
           </DialogHeader>
-          <textarea
-            value={rulesText}
-            onChange={(e) => setRulesText(e.target.value)}
-            spellCheck={false}
-            placeholder={"DOMAIN-SUFFIX,example.com,PROXY\nGEOIP,CN,DIRECT"}
-            className="h-[min(40vh,320px)] w-full resize-y rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={rulesTab === "prepend" ? "default" : "secondary"}
+              onClick={() => setRulesTab("prepend")}
+            >
+              {t.profiles.rulesTabPrepend}
+            </Button>
+            <Button
+              size="sm"
+              variant={rulesTab === "append" ? "default" : "secondary"}
+              onClick={() => setRulesTab("append")}
+            >
+              {t.profiles.rulesTabAppend}
+            </Button>
+          </div>
+          {rulesTab === "prepend" ? (
+            <CodeEditor
+              value={rulesText}
+              onChange={setRulesText}
+              language="text"
+              minHeight="280px"
+            />
+          ) : (
+            <CodeEditor
+              value={appendText}
+              onChange={setAppendText}
+              language="text"
+              minHeight="280px"
+            />
+          )}
           <DialogFooter>
             <Button
               variant="secondary"
@@ -1035,6 +1198,79 @@ export function ProfilesPage() {
                     placeholder="DIRECT, REJECT, node-a"
                   />
                 </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t.profiles.groupIcon}</Label>
+                    <Input
+                      value={g.icon ?? ""}
+                      onChange={(e) =>
+                        setGroups((gs) =>
+                          gs.map((x, j) =>
+                            j === i ? { ...x, icon: e.target.value } : x,
+                          ),
+                        )
+                      }
+                      className="h-8 text-xs"
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t.profiles.groupUse}</Label>
+                    <Input
+                      value={(g.use ?? []).join(", ")}
+                      onChange={(e) =>
+                        setGroups((gs) =>
+                          gs.map((x, j) =>
+                            j === i
+                              ? {
+                                  ...x,
+                                  use: e.target.value
+                                    .split(/[,，\n]+/)
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                }
+                              : x,
+                          ),
+                        )
+                      }
+                      className="h-8 font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t.profiles.groupUrl}</Label>
+                    <Input
+                      value={g.url ?? ""}
+                      onChange={(e) =>
+                        setGroups((gs) =>
+                          gs.map((x, j) =>
+                            j === i ? { ...x, url: e.target.value } : x,
+                          ),
+                        )
+                      }
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t.profiles.groupInterval}</Label>
+                    <Input
+                      type="number"
+                      value={g.interval ?? ""}
+                      onChange={(e) =>
+                        setGroups((gs) =>
+                          gs.map((x, j) =>
+                            j === i
+                              ? {
+                                  ...x,
+                                  interval: Number(e.target.value) || undefined,
+                                }
+                              : x,
+                          ),
+                        )
+                      }
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                </div>
               </div>
             ))}
             {!groups.length ? (
@@ -1069,6 +1305,76 @@ export function ProfilesPage() {
                 {groupsBusy ? t.profiles.saving : t.profiles.save}
               </Button>
             </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom proxies */}
+      <Dialog
+        open={proxiesOpen}
+        onOpenChange={(open) => {
+          setProxiesOpen(open);
+          if (!open) setProxiesId(null);
+        }}
+      >
+        <DialogContent className="max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t.profiles.customProxies}
+              {proxiesName ? ` · ${proxiesName}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {t.profiles.customProxiesHint}
+            </DialogDescription>
+          </DialogHeader>
+          <CodeEditor
+            value={proxiesText}
+            onChange={setProxiesText}
+            language="yaml"
+            minHeight="320px"
+          />
+          <DialogFooter>
+            <Button variant="secondary" size="sm" onClick={() => setProxiesOpen(false)}>
+              {t.profiles.cancel}
+            </Button>
+            <Button size="sm" disabled={proxiesBusy} onClick={() => void saveCustomProxies()}>
+              {proxiesBusy ? t.profiles.saving : t.profiles.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom providers */}
+      <Dialog
+        open={providersOpen}
+        onOpenChange={(open) => {
+          setProvidersOpen(open);
+          if (!open) setProvidersId(null);
+        }}
+      >
+        <DialogContent className="max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t.profiles.customProviders}
+              {providersName ? ` · ${providersName}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {t.profiles.customProvidersHint}
+            </DialogDescription>
+          </DialogHeader>
+          <CodeEditor
+            value={providersText}
+            onChange={setProvidersText}
+            language="yaml"
+            minHeight="320px"
+          />
+          <DialogFooter>
+            <Button variant="secondary" size="sm" onClick={() => setProvidersOpen(false)}>
+              {t.profiles.cancel}
+            </Button>
+            <Button size="sm" disabled={providersBusy} onClick={() => void saveCustomProviders()}>
+              {providersBusy ? t.profiles.saving : t.profiles.save}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1132,11 +1438,11 @@ export function ProfilesPage() {
             </DialogTitle>
             <DialogDescription>{t.profiles.yamlDesc}</DialogDescription>
           </DialogHeader>
-          <textarea
+          <CodeEditor
             value={yamlText}
-            onChange={(e) => setYamlText(e.target.value)}
-            spellCheck={false}
-            className="h-[min(60vh,480px)] w-full resize-y rounded-md border border-input bg-secondary/55 p-3 font-mono text-[11px] leading-5 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onChange={setYamlText}
+            language="yaml"
+            minHeight="360px"
           />
           <DialogFooter>
             <Button
