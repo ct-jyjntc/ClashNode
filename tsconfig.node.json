@@ -14,5 +14,6 @@
     "noUnusedParameters": false,
     "types": ["node"]
   },
-  "include": ["electron", "vite.config.ts"]
+  "include": ["electron", "vite.config.ts"],
+  "exclude": ["electron/**/*.test.ts", "electron/**/*.spec.ts"]
 }
